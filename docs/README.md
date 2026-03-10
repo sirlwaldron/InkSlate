@@ -13,4 +13,4 @@ To serve these pages:
 4. Save
 
 Your privacy policy will be at:  
-`https://sirlwaldron.github.io/InkSlate/privacy`
+`https://sirlwaldron.github.io/InkSlate/privacy.html`

@@ -2,7 +2,7 @@
 
 A minimalist, modern iOS app designed to help you organize your life with a clean, intuitive interface. InkSlate combines multiple productivity tools into one cohesive experience.
 
-- **[Privacy Policy](https://sirlwaldron.github.io/InkSlate/privacy)** | **[Terms of Use](https://sirlwaldron.github.io/InkSlate/terms)**
+- **[Privacy Policy](https://sirlwaldron.github.io/InkSlate/privacy.html)** | **[Terms of Use](https://sirlwaldron.github.io/InkSlate/terms.html)**
 
 ## ✨ Features
 

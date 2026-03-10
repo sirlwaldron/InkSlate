@@ -24,8 +24,8 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>InkSlate needs permission to save photos to your photo library.</string>
 	<key>PrivacyPolicyURL</key>
-	<string>https://sirlwaldron.github.io/InkSlate/privacy</string>
+	<string>https://sirlwaldron.github.io/InkSlate/privacy.html</string>
 	<key>TermsOfUseURL</key>
-	<string>https://sirlwaldron.github.io/InkSlate/terms</string>
+	<string>https://sirlwaldron.github.io/InkSlate/terms.html</string>
 </dict>
 </plist>

@@ -5,8 +5,8 @@ Use this before submitting InkSlate to the App Store.
 ## 1. Privacy Policy & Terms
 
 Privacy policy and terms are in `docs/` and point to GitHub Pages:
-- **Privacy:** https://sirlwaldron.github.io/InkSlate/privacy
-- **Terms:** https://sirlwaldron.github.io/InkSlate/terms
+- **Privacy:** https://sirlwaldron.github.io/InkSlate/privacy.html
+- **Terms:** https://sirlwaldron.github.io/InkSlate/terms.html
 
 1. **Enable GitHub Pages** in your repo (Settings → Pages → Deploy from branch, main, /docs).
 

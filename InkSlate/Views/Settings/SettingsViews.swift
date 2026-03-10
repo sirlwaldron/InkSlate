@@ -13,11 +13,11 @@ import Security
 private enum AppLegalURLs {
     static var privacyPolicy: String {
         Bundle.main.object(forInfoDictionaryKey: "PrivacyPolicyURL") as? String
-            ?? "https://sirlwaldron.github.io/InkSlate/privacy"
+            ?? "https://sirlwaldron.github.io/InkSlate/privacy.html"
     }
     static var termsOfUse: String {
         Bundle.main.object(forInfoDictionaryKey: "TermsOfUseURL") as? String
-            ?? "https://sirlwaldron.github.io/InkSlate/terms"
+            ?? "https://sirlwaldron.github.io/InkSlate/terms.html"
     }
 }
 
