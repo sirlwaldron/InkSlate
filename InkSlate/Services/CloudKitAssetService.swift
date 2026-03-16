@@ -128,7 +128,7 @@ final class CloudKitAssetService {
             // Delete all records in batches
             if !recordIDsToDelete.isEmpty {
                 for recordID in recordIDsToDelete {
-                    try? await database.deleteRecord(withID: recordID)
+                    _ = try? await database.deleteRecord(withID: recordID)
                 }
                 logger.info("✅ Deleted \(recordIDsToDelete.count) PlacePhoto records")
             }

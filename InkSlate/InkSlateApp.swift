@@ -133,7 +133,7 @@ struct InkSlateApp: App {
         Task.detached(priority: .utility) {
             // Perform cleanup on background context
             let context = controller.backgroundContext()
-            try? await context.perform {
+            await context.perform {
                 // Clean up soft-deleted items older than 30 days
                 let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
                 let fetchRequest = NSFetchRequest<NSManagedObject>(entityName: "Notes")

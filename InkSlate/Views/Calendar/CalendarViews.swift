@@ -9,7 +9,7 @@ import EventKit
 import UIKit
 
 // MARK: - EKEvent Extension
-extension EKEvent: Identifiable {
+extension EKEvent: @retroactive Identifiable {
     public var id: String { eventIdentifier }
 }
 
