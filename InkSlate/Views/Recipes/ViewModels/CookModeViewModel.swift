@@ -8,6 +8,12 @@
 import Foundation
 import Combine
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @MainActor
 final class CookModeViewModel: ObservableObject {
@@ -46,7 +52,8 @@ final class CookModeViewModel: ObservableObject {
     }
     
     func nextStep() {
-        guard currentStepIndex < steps.count - 1 else { return }
+        // Allow advancing to `steps.count` so the UI can show a completion state.
+        guard currentStepIndex < steps.count else { return }
         currentStepIndex += 1
     }
     
@@ -132,8 +139,12 @@ final class CookModeViewModel: ObservableObject {
             state.remainingSeconds = 0
             stopTimer(for: stepID)
             // Trigger haptic feedback
+            #if canImport(UIKit)
             let generator = UINotificationFeedbackGenerator()
             generator.notificationOccurred(.success)
+            #elseif canImport(AppKit)
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            #endif
         }
         
         activeTimers[stepID] = state

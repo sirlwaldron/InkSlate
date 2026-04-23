@@ -151,7 +151,7 @@ struct TodoMainView: View {
             }
             .navigationTitle(selectedTab?.name ?? "To-Do")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 12) {
                         Button {
                                 showingAddTab = true
@@ -457,6 +457,21 @@ struct TodoTaskRow: View {
             }
             .tint(DesignSystem.Colors.success)
         }
+        .contextMenu {
+            Button {
+                withAnimation {
+                    toggleTaskCompletion()
+                    lightHaptic()
+                }
+            } label: {
+                Label("Mark Complete", systemImage: "checkmark")
+            }
+            Button(role: .destructive) {
+                deleteTask()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
     
     private func formatDate(_ date: Date) -> String {
@@ -731,9 +746,9 @@ struct AddTodoTaskView: View {
                 .padding(DesignSystem.Spacing.lg)
             }
             .navigationTitle("Add Task")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
@@ -900,9 +915,9 @@ struct AddTodoTabView: View {
             }
             .padding(DesignSystem.Spacing.lg)
             .navigationTitle("New List")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
@@ -1044,9 +1059,9 @@ struct EditTodoTabView: View {
             }
             .padding(DesignSystem.Spacing.lg)
             .navigationTitle("Edit List")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }

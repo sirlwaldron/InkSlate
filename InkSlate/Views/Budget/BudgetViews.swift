@@ -371,7 +371,7 @@ struct BudgetMainView: View {
     
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
+        ToolbarItem(placement: .primaryAction) {
             HStack(spacing: DesignSystem.Spacing.md) {
                 Button(action: {
                     showingCreateCategory = true
@@ -482,7 +482,9 @@ struct MonthlyIncomeInputView: View {
                         TextField("0.00", text: $incomeText)
                             .font(.system(size: 48, weight: .semibold))
                             .foregroundColor(DesignSystem.Colors.textPrimary)
+                            #if os(iOS)
                             .keyboardType(.decimalPad)
+                            #endif
                             .multilineTextAlignment(.leading)
                             .textFieldStyle(.plain)
                             .focused($isFieldFocused)
@@ -508,7 +510,7 @@ struct MonthlyIncomeInputView: View {
             }
             .padding(DesignSystem.Spacing.xl)
             .background(DesignSystem.Colors.background)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -790,7 +792,9 @@ struct CategoryCardView: View {
                     if showingAddSubcategoryField {
                         HStack(spacing: DesignSystem.Spacing.sm) {
                             TextField("New subcategory name", text: $newSubcategoryName)
+                                #if os(iOS)
                                 .textInputAutocapitalization(.words)
+                                #endif
                                 .font(DesignSystem.Typography.body)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
                                 .padding(DesignSystem.Spacing.md)
@@ -1051,7 +1055,9 @@ struct SubcategoryRowView: View {
                 TextField("0.00", text: $textInput)
                     .font(DesignSystem.Typography.callout)
                     .foregroundColor(DesignSystem.Colors.textPrimary)
-                    .keyboardType(.decimalPad)
+                    #if os(iOS)
+                            .keyboardType(.decimalPad)
+                            #endif
                     .multilineTextAlignment(.trailing)
                     .frame(width: 70)
                     .onTapGesture {
@@ -1137,9 +1143,9 @@ struct EditSubcategoryView: View {
             }
             .padding(DesignSystem.Spacing.lg)
             .navigationTitle("Edit Subcategory")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
@@ -1278,7 +1284,9 @@ struct BudgetItemDetailView: View {
                                 
                                 TextField("$0.00", value: $amount, format: .currency(code: "USD"))
                                     .font(DesignSystem.Typography.body)
-                                    .keyboardType(.decimalPad)
+                                    #if os(iOS)
+                            .keyboardType(.decimalPad)
+                            #endif
                                     .padding(DesignSystem.Spacing.md)
                                     .background(DesignSystem.Colors.backgroundSecondary)
                                     .cornerRadius(DesignSystem.CornerRadius.sm)
@@ -1337,7 +1345,7 @@ struct BudgetItemDetailView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Budget Item")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -1421,7 +1429,9 @@ struct CreateCategoryView: View {
                                 
                                 TextField("$0.00", value: $budget, format: .currency(code: "USD"))
                                     .font(DesignSystem.Typography.body)
-                                    .keyboardType(.decimalPad)
+                                    #if os(iOS)
+                            .keyboardType(.decimalPad)
+                            #endif
                                     .padding(DesignSystem.Spacing.md)
                                     .background(DesignSystem.Colors.backgroundSecondary)
                                     .cornerRadius(DesignSystem.CornerRadius.sm)
@@ -1520,7 +1530,7 @@ struct CreateCategoryView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("New Category")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -1572,7 +1582,7 @@ struct CategoryManagementView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Manage Categories")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -1824,9 +1834,9 @@ struct EditCategoryView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Edit Category")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
@@ -1869,6 +1879,7 @@ struct BudgetTrashView: View {
     
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \BudgetItem.date, ascending: false)]
+        , predicate: NSPredicate(value: false) // Budget items are not soft-deletable yet; keep this view safe.
     ) private var deletedItems: FetchedResults<BudgetItem>
     
     var body: some View {
@@ -1880,11 +1891,11 @@ struct BudgetTrashView: View {
                             .font(.system(size: 48))
                             .foregroundColor(DesignSystem.Colors.textTertiary)
                         
-                        Text("Trash is Empty")
+                        Text("Trash is unavailable")
                             .font(DesignSystem.Typography.title3)
                             .foregroundColor(DesignSystem.Colors.textPrimary)
                         
-                        Text("Deleted items will appear here")
+                        Text("Budget items are currently deleted permanently. A safe trash feature will be added after soft-delete support is implemented.")
                             .font(DesignSystem.Typography.body)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
                     }
@@ -1931,27 +1942,13 @@ struct BudgetTrashView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Recently Deleted")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                         .foregroundColor(DesignSystem.Colors.accent)
                 }
-                if !deletedItems.isEmpty {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Empty Trash") {
-                            emptyTrash()
-                        }
-                        .foregroundColor(DesignSystem.Colors.error)
-                    }
-                }
             }
-        }
-    }
-    
-    private func emptyTrash() {
-        for item in deletedItems {
-            budgetManager.deleteBudgetItem(item, with: viewContext)
         }
     }
 }

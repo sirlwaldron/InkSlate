@@ -5,7 +5,9 @@
 //  Image storage service with error handling and caching
 //
 
+#if canImport(UIKit)
 import UIKit
+#endif
 import Foundation
 
 enum RecipeImageStoreError: LocalizedError {
@@ -33,7 +35,7 @@ enum RecipeImageStoreError: LocalizedError {
 
 final class RecipeImageStore {
     private static let folderName = "RecipeImages"
-    private static var imageCache: [String: UIImage] = [:]
+    private static var imageCache: [String: PlatformImage] = [:]
     private static let cacheQueue = DispatchQueue(label: "com.inkslate.recipeImageCache", attributes: .concurrent)
     private static let maxCacheSize = 50 // Maximum number of images to cache
     
@@ -63,9 +65,13 @@ final class RecipeImageStore {
         
         do {
             try data.write(to: fileURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [FileAttributeKey.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: fileURL.path
+            )
             
             // Update cache
-            if let image = UIImage(data: data) {
+            if let image = platformImage(from: data) {
                 cacheQueue.async(flags: .barrier) {
                     updateCache(key: fileName, image: image)
                 }
@@ -79,45 +85,69 @@ final class RecipeImageStore {
     
     // MARK: - Load Image
     
-    static func loadImage(path: String?) -> UIImage? {
+    /// Fast path for already-decoded images (non-blocking).
+    static func cachedImage(path: String?) -> PlatformImage? {
         guard let path, !path.isEmpty else { return nil }
         
         // Check cache first
         if let cachedImage = getCachedImage(key: path) {
             return cachedImage
         }
+        return nil
+    }
+    
+    /// Asynchronously loads and decodes an image, updating the in-memory cache.
+    static func loadImage(path: String?) async -> PlatformImage? {
+        guard let path, !path.isEmpty else { return nil }
         
-        // Handle HTTP URLs
-        if path.hasPrefix("http"), let url = URL(string: path) {
-            return loadImageFromURL(url)
+        if let cached = cachedImage(path: path) {
+            return cached
         }
         
-        // Handle base64 data URLs
+        // Base64 data URLs can be decoded off-main quickly.
         if path.hasPrefix("data:image"),
            let base64 = path.components(separatedBy: ",").last,
            let data = Data(base64Encoded: base64),
-           let image = UIImage(data: data) {
-            cacheQueue.async(flags: .barrier) {
-                updateCache(key: path, image: image)
-            }
+           let image = platformImage(from: data) {
+            cacheQueue.async(flags: .barrier) { updateCache(key: path, image: image) }
             return image
         }
         
-        // Load from file system
+        // Remote URL: use URLSession (never Data(contentsOf:)).
+        if path.hasPrefix("http"), let url = URL(string: path) {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      let image = platformImage(from: data) else {
+                    return nil
+                }
+                cacheQueue.async(flags: .barrier) { updateCache(key: url.absoluteString, image: image) }
+                return image
+            } catch {
+                return nil
+            }
+        }
+        
+        // Local file: load off-main to avoid blocking SwiftUI rendering.
         guard let directoryURL = try? imagesDirectoryURL() else { return nil }
         let fileURL = directoryURL.appendingPathComponent(path)
         
-        guard let data = try? Data(contentsOf: fileURL),
-              let image = UIImage(data: data) else {
-            return nil
-        }
-        
-        // Cache the loaded image
-        cacheQueue.async(flags: .barrier) {
-            updateCache(key: path, image: image)
-        }
-        
-        return image
+        return await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let image = platformImage(from: data) else {
+                return nil
+            }
+            cacheQueue.async(flags: .barrier) { updateCache(key: path, image: image) }
+            return image
+        }.value
+    }
+    
+    /// Returns a local file URL for a stored recipe image (if applicable).
+    static func fileURL(path: String?) -> URL? {
+        guard let path, !path.isEmpty else { return nil }
+        guard !path.hasPrefix("http"), !path.hasPrefix("data:image") else { return nil }
+        guard let directoryURL = try? imagesDirectoryURL() else { return nil }
+        return directoryURL.appendingPathComponent(path)
     }
     
     // MARK: - Delete Image
@@ -193,28 +223,13 @@ final class RecipeImageStore {
         throw RecipeImageStoreError.diskSpaceUnavailable
     }
     
-    private static func loadImageFromURL(_ url: URL) -> UIImage? {
-        // For network images, we should use AsyncImage in views
-        // This is a fallback for synchronous loading
-        guard let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data) else {
-            return nil
-        }
-        
-        cacheQueue.async(flags: .barrier) {
-            updateCache(key: url.absoluteString, image: image)
-        }
-        
-        return image
-    }
-    
-    private static func getCachedImage(key: String) -> UIImage? {
+    private static func getCachedImage(key: String) -> PlatformImage? {
         return cacheQueue.sync {
             imageCache[key]
         }
     }
     
-    private static func updateCache(key: String, image: UIImage) {
+    private static func updateCache(key: String, image: PlatformImage) {
         // Limit cache size
         if imageCache.count >= maxCacheSize {
             // Remove oldest entry (simple FIFO - in production, use LRU)

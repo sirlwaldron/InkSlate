@@ -112,8 +112,12 @@ struct ModernRecipeMainView: View {
                 .padding(.horizontal, DesignSystem.Spacing.lg)
             }
             .refreshable { await refreshRecipes() }
-            .navigationBarHidden(true)
+            .navigationBarHiddenIfPossible(true)
             }
+        }
+        .onAppear {
+            let ids = Set(allRecipes.compactMap { $0.id })
+            RecipeImageStore.cleanupOrphanedImages(validRecipeIDs: ids)
         }
         .sheet(isPresented: $showingAddRecipe) {
             ModernAddRecipeView()
@@ -393,9 +397,9 @@ struct RecipeStatsView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Statistics")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -493,7 +497,7 @@ struct FilterSortView: View {
             }
             .navigationTitle("Sort & Filter")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -602,6 +606,7 @@ struct ModernRecipeCard: View {
 
 private struct RecipeCardImage: View {
     let path: String?
+    @State private var image: PlatformImage?
     
     var body: some View {
         Group {
@@ -615,13 +620,20 @@ private struct RecipeCardImage: View {
                 } placeholder: {
                     placeholder
                 }
-            } else if let image = RecipeImageStore.loadImage(path: path) {
-                Image(uiImage: image)
+            } else if let image {
+                Image(platformImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
                 placeholder
             }
+        }
+        .task(id: path) {
+            guard let path, !path.hasPrefix("http") else {
+                image = nil
+                return
+            }
+            image = await RecipeImageStore.loadImage(path: path)
         }
     }
     
@@ -696,7 +708,7 @@ struct ModernAddRecipeView: View {
     @State private var selectedCategory: RecipeCategory = .dinner
     @State private var rating = 0
     @State private var imageItem: PhotosPickerItem?
-    @State private var imagePreview: UIImage?
+    @State private var imagePreview: PlatformImage?
     @State private var existingImagePath: String = ""
     @State private var selectedImageData: Data?
     @State private var ingredients: [RecipeIngredientData] = []
@@ -725,7 +737,7 @@ struct ModernAddRecipeView: View {
                         }
                         Task {
                             if let data = try? await newItem.loadTransferable(type: Data.self),
-                               let image = UIImage(data: data) {
+                               let image = platformImage(from: data) {
                                 selectedImageData = data
                                 imagePreview = image
                             }
@@ -861,7 +873,7 @@ struct ModernAddRecipeView: View {
             .background(DesignSystem.Colors.background)
             .navigationTitle(editingRecipe == nil ? "New Recipe" : "Edit Recipe")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
@@ -874,7 +886,7 @@ struct ModernAddRecipeView: View {
     private var imageSection: some View {
         Group {
             if let image = currentImagePreview {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(height: 220)
@@ -886,11 +898,11 @@ struct ModernAddRecipeView: View {
         }
     }
     
-    private var currentImagePreview: UIImage? {
+    private var currentImagePreview: PlatformImage? {
         if let imagePreview {
             return imagePreview
         }
-        return RecipeImageStore.loadImage(path: existingImagePath)
+        return nil
     }
     
     private var imagePlaceholder: some View {
@@ -931,7 +943,9 @@ struct ModernAddRecipeView: View {
         name = recipe.name ?? ""
         recipeDescription = recipe.recipeDescription ?? ""
         existingImagePath = recipe.imageUrl ?? ""
-        imagePreview = RecipeImageStore.loadImage(path: existingImagePath)
+        Task {
+            imagePreview = await RecipeImageStore.loadImage(path: existingImagePath)
+        }
         rating = Int(recipe.rating)
         prepTime = Int(recipe.prepTime)
         cookTime = Int(recipe.cookTime)
@@ -994,7 +1008,7 @@ struct ModernAddRecipeView: View {
                     )
                     recipe.imageUrl = path
                     existingImagePath = path
-                    imagePreview = UIImage(data: data)
+                    imagePreview = platformImage(from: data)
                     selectedImageData = nil
                 } else {
                     print("Warning: Invalid image data, skipping image save")
@@ -1120,7 +1134,9 @@ struct AddIngredientView: View {
             Form {
                 TextField("Ingredient Name", text: $name)
                 TextField("Amount", text: $amount)
+                    #if os(iOS)
                     .keyboardType(.decimalPad)
+                    #endif
                 Picker("Unit", selection: $unit) {
                     ForEach(units, id: \.self) { unit in
                         Text(unit).tag(unit)
@@ -1129,10 +1145,10 @@ struct AddIngredientView: View {
             }
             .navigationTitle("Add Ingredient")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Add") {
                         let ingredient = RecipeIngredientData(name: name, amount: amount, unit: unit)
                         onAdd(ingredient)
@@ -1241,10 +1257,10 @@ struct AddStepView: View {
             }
             .navigationTitle("Add Step")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Add") {
                         let step = RecipeStep(
                             instruction: instruction,
@@ -1270,8 +1286,10 @@ struct ModernRecipeDetailView: View {
     @State private var showingDeleteAlert = false
     @State private var showingAddToList = false
     @State private var showingShareSheet = false
+    @State private var shareItems: [Any] = []
     @State private var currentServings: Int
     @State private var deletedRecipe: Recipe? // For undo functionality
+    @State private var headerImage: PlatformImage?
     
     init(recipe: Recipe) {
         self.recipe = recipe
@@ -1282,8 +1300,8 @@ struct ModernRecipeDetailView: View {
         NavigationStack {
         ScrollView {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xl) {
-                if let image = RecipeImageStore.loadImage(path: recipe.imageUrl) {
-                    Image(uiImage: image)
+                if let headerImage {
+                    Image(platformImage: headerImage)
                         .resizable()
                         .scaledToFill()
                         .frame(height: 300)
@@ -1515,9 +1533,9 @@ struct ModernRecipeDetailView: View {
                 }
         }
         .background(DesignSystem.Colors.background)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
         .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button(action: { showingEdit = true }) {
                             Label("Edit", systemImage: "pencil")
@@ -1529,7 +1547,10 @@ struct ModernRecipeDetailView: View {
                             )
                         }
                         Divider()
-                        Button(action: { showingShareSheet = true }) {
+                        Button(action: {
+                            shareItems = RecipeExportService.shareRecipe(recipe)
+                            showingShareSheet = true
+                        }) {
                             Label("Share Recipe", systemImage: "square.and.arrow.up")
                         }
                         Button(action: exportRecipe) {
@@ -1544,7 +1565,7 @@ struct ModernRecipeDetailView: View {
                     }
                 }
                 
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -1559,7 +1580,6 @@ struct ModernRecipeDetailView: View {
             AddRecipeIngredientsToListView(recipe: recipe)
         }
         .sheet(isPresented: $showingShareSheet) {
-            let shareItems = RecipeExportService.shareRecipe(recipe)
             ShareSheet(items: shareItems)
         }
         .alert("Delete Recipe?", isPresented: $showingDeleteAlert) {
@@ -1569,6 +1589,13 @@ struct ModernRecipeDetailView: View {
             }
         } message: {
             Text("This action cannot be undone. You can undo this action within 5 seconds.")
+        }
+        .task(id: recipe.imageUrl) {
+            guard let path = recipe.imageUrl, !path.hasPrefix("http") else {
+                headerImage = nil
+                return
+            }
+            headerImage = await RecipeImageStore.loadImage(path: path)
         }
     }
     
@@ -1615,18 +1642,16 @@ struct ModernRecipeDetailView: View {
     
     private func exportRecipe() {
         let text = RecipeExportService.exportRecipe(recipe)
-        let activityVC = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-        
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootViewController = windowScene.windows.first?.rootViewController {
-            rootViewController.present(activityVC, animated: true)
-        }
+        shareItems = [text]
+        showingShareSheet = true
     }
     
     private func deleteRecipe() {
         // Store reference for undo (soft delete approach)
         deletedRecipe = recipe
+        let imagePath = recipe.imageUrl
         viewContext.delete(recipe)
+        RecipeImageStore.deleteImage(at: imagePath)
         
         do {
             try viewContext.save()
@@ -1690,7 +1715,7 @@ struct AddRecipeIngredientsToListView: View {
             }
             .padding()
             .navigationTitle("Add Ingredients")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
         }
     }
     
@@ -1967,6 +1992,13 @@ struct ShoppingListMainView: View {
                                             Label("Delete", systemImage: "trash")
                                         }
                                     }
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            deleteItem(item)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1984,7 +2016,7 @@ struct ShoppingListMainView: View {
                     )
                 }
             }
-            .navigationBarHidden(true)
+            .navigationBarHiddenIfPossible(true)
         }
     }
 
@@ -2112,6 +2144,8 @@ private struct ShoppingListFooterBar: View {
     let itemCount: Int
     let incompleteCount: Int
     let onClear: () -> Void
+
+    @State private var showingClearConfirm = false
     
     private var statusText: String {
         if itemCount == 0 {
@@ -2143,8 +2177,7 @@ private struct ShoppingListFooterBar: View {
                 
                 Button(role: .destructive) {
                     guard itemCount > 0 else { return }
-                    lightHaptic()
-                    onClear()
+                    showingClearConfirm = true
                 } label: {
                     Label("Clear List", systemImage: "trash")
                         .font(DesignSystem.Typography.caption)
@@ -2165,9 +2198,22 @@ private struct ShoppingListFooterBar: View {
         }
         .background(.ultraThinMaterial)
         .background(
-            Color(.systemBackground)
+            Color.adaptiveSystemBackground
                 .opacity(0.9)
         )
+        .confirmationDialog(
+            "Clear shopping list?",
+            isPresented: $showingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete all items", role: .destructive) {
+                lightHaptic()
+                onClear()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete all items from your shopping list.")
+        }
         .overlay(
             Divider()
                 .padding(.top, -0.5),
@@ -2513,10 +2559,10 @@ struct AddShoppingItemView: View {
             }
             .navigationTitle("Add Item")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Add") {
                         addItem()
                     }
@@ -2553,6 +2599,7 @@ struct PantryMainView: View {
     @EnvironmentObject private var sharedState: SharedStateManager
     @State private var selectedCategory: PantryCategory = .fridge
     @State private var showingAddItem = false
+    @State private var searchText = ""
     @Namespace private var animation
     
     var body: some View {
@@ -2591,6 +2638,37 @@ struct PantryMainView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 16)
+
+                // Always-visible search (navigation bar is hidden)
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
+
+                    TextField("Search \(selectedCategory.rawValue)", text: $searchText)
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                            lightHaptic()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(DesignSystem.Colors.textTertiary.opacity(0.7))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(DesignSystem.Colors.backgroundSecondary)
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
                 
                 // Modern pill category selector
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -2620,11 +2698,12 @@ struct PantryMainView: View {
                 // Content
                 PantrySectionView(
                     category: selectedCategory,
+                    searchText: $searchText,
                     onAddTapped: { showingAddItem = true }
                 )
             }
             .background(DesignSystem.Colors.background)
-            .navigationBarHidden(true)
+            .navigationBarHiddenIfPossible(true)
         .sheet(isPresented: $showingAddItem) {
             AddPantryItemView(category: selectedCategory)
             }
@@ -2662,12 +2741,14 @@ private struct PantryCategoryPill: View {
 struct PantrySectionView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @FetchRequest private var items: FetchedResults<PantryItemEntity>
+    @Binding private var searchText: String
     
     private let category: PantryCategory
     private let onAddTapped: () -> Void
     
-    init(category: PantryCategory, onAddTapped: @escaping () -> Void) {
+    init(category: PantryCategory, searchText: Binding<String>, onAddTapped: @escaping () -> Void) {
         self.category = category
+        self._searchText = searchText
         self.onAddTapped = onAddTapped
         _items = FetchRequest(
             sortDescriptors: [
@@ -2680,16 +2761,50 @@ struct PantrySectionView: View {
     }
     
     var body: some View {
-            List {
+        let filteredItems = items.filter { item in
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return true }
+            return item.wrappedName.localizedCaseInsensitiveContains(query)
+        }
+        
+        List {
             if items.isEmpty {
                 EmptyPantrySectionView(category: category, onAdd: onAddTapped)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+            } else if filteredItems.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.textTertiary.opacity(0.6))
+                    
+                    Text("No matches")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    
+                    if !searchText.isEmpty {
+                        Button("Clear search") {
+                            searchText = ""
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 200)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             } else {
-                ForEach(items) { item in
+                ForEach(filteredItems) { item in
                     PantryItemRowView(item: item)
                         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                deleteItem(item)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
                             Button(role: .destructive) {
                                 deleteItem(item)
                             } label: {
@@ -2788,7 +2903,9 @@ struct AddPantryItemView: View {
                             
                             TextField("1", text: $quantity)
                                 .font(.system(size: 17, weight: .regular))
+                                #if os(iOS)
                                 .keyboardType(.numberPad)
+                                #endif
                                 .frame(width: 60)
                             
                             Rectangle()
@@ -2855,7 +2972,7 @@ struct AddPantryItemView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {

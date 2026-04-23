@@ -6,7 +6,9 @@
 //
 
 import CloudKit
+#if canImport(UIKit)
 import UIKit
+#endif
 import os.log
 
 final class CloudKitAssetService {
@@ -20,7 +22,7 @@ final class CloudKitAssetService {
     }
     
     /// Uploads an image to CloudKit as an asset and returns the asset URL
-    func uploadPhoto(_ image: UIImage, for placeID: UUID) async throws -> String {
+    func uploadPhoto(_ image: PlatformImage, for placeID: UUID) async throws -> String {
         // Compress image to reasonable size for CloudKit (max ~5MB recommended)
         guard let imageData = image.jpegData(compressionQuality: 0.7) else {
             throw CloudKitAssetError.imageConversionFailed
@@ -71,7 +73,7 @@ final class CloudKitAssetService {
     }
     
     /// Downloads an image from CloudKit using the stored record name
-    func downloadPhoto(recordName: String) async throws -> UIImage? {
+    func downloadPhoto(recordName: String) async throws -> PlatformImage? {
         let recordID = CKRecord.ID(recordName: recordName)
         let database = container.privateCloudDatabase
         
@@ -81,7 +83,7 @@ final class CloudKitAssetService {
             guard let photoAsset = record["photo"] as? CKAsset,
                   let fileURL = photoAsset.fileURL,
                   let imageData = try? Data(contentsOf: fileURL),
-                  let image = UIImage(data: imageData) else {
+                  let image = platformImage(from: imageData) else {
                 throw CloudKitAssetError.imageLoadFailed
             }
             

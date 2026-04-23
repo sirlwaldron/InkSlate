@@ -5,8 +5,11 @@
 //  Modern, minimalist calendar implementation
 
 import SwiftUI
-import EventKit
+@preconcurrency import EventKit
+import Combine
+#if canImport(UIKit)
 import UIKit
+#endif
 
 // MARK: - EKEvent Extension
 extension EKEvent: @retroactive Identifiable {
@@ -26,9 +29,10 @@ class CalendarManager: ObservableObject {
     @Published var authorizationStatus: EKAuthorizationStatus = .notDetermined
     @Published var searchQuery: String = ""
 
-    let store = EKEventStore()
+    nonisolated(unsafe) let store = EKEventStore()
     private let selectedCalendarsKey = "selectedCalendarIdentifiers"
     private var reloadTask: Task<Void, Never>?
+    private var loadToken = UUID()
     
     private var dayCalendar: Calendar {
         var cal = Calendar(identifier: .gregorian)
@@ -52,26 +56,45 @@ class CalendarManager: ObservableObject {
         }
     }
     
+    var canReadEvents: Bool {
+        if #available(iOS 17, *) {
+            return authorizationStatus == .fullAccess
+        } else {
+            return authorizationStatus == .authorized
+        }
+    }
+    
+    var canWriteEvents: Bool {
+        if #available(iOS 17, *) {
+            return authorizationStatus == .fullAccess || authorizationStatus == .writeOnly
+        } else {
+            return authorizationStatus == .authorized
+        }
+    }
+    
+    func refreshAuthorizationStatus() {
+        authorizationStatus = EKEventStore.authorizationStatus(for: .event)
+    }
+    
     func requestAccess() async {
-            if #available(iOS 17, *) {
+        if #available(iOS 17, *) {
             if authorizationStatus == .notDetermined {
-                    do {
-                        let granted = try await store.requestFullAccessToEvents()
-                    authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                        if granted {
-                        await reloadEverything()
-                        }
-                    } catch {
+                do {
+                    _ = try await store.requestFullAccessToEvents()
+                } catch {
                     // Access request failed
                 }
-            } else if authorizationStatus == .fullAccess {
+                refreshAuthorizationStatus()
+            }
+            
+            if canReadEvents {
                 await reloadEverything()
-                }
-            } else {
+            }
+        } else {
             store.requestAccess(to: .event) { [weak self] granted, _ in
                 Task { @MainActor in
                     self?.authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                            if granted {
+                    if granted {
                         await self?.reloadEverything()
                     }
                 }
@@ -94,40 +117,40 @@ class CalendarManager: ObservableObject {
     }
 
     func loadEvents(center: Date? = nil) {
-        let hasAccess: Bool
-        if #available(iOS 17, *) {
-            hasAccess = authorizationStatus == .fullAccess
-        } else {
-            hasAccess = authorizationStatus == .authorized
-        }
-        
-        guard hasAccess else {
+        guard canReadEvents else {
             events = []
             return
         }
         
         reloadTask?.cancel()
-        reloadTask = Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            let base = center ?? selectedDate
-            let cal = dayCalendar
-            let startDate = cal.date(byAdding: .month, value: -6, to: cal.startOfDay(for: base))!
-            let endDate = cal.date(byAdding: .month, value: 6, to: cal.startOfDay(for: base))!
-            
-            let visibleCalendars = selectedCalendars.isEmpty
-                ? allCalendars
-                : allCalendars.filter { selectedCalendars.contains($0.calendarIdentifier) }
-            
-            guard !visibleCalendars.isEmpty else {
-                events = []
-                return
-            }
-
-            let predicate = store.predicateForEvents(withStart: startDate, end: endDate, calendars: visibleCalendars)
-            let fetched = store.events(matching: predicate)
-            events = fetched.sorted { $0.startDate < $1.startDate }
+        let token = UUID()
+        loadToken = token
+        
+        isLoading = true
+        
+        let base = center ?? selectedDate
+        let cal = dayCalendar
+        let startDate = cal.date(byAdding: .month, value: -6, to: cal.startOfDay(for: base))!
+        let endDate = cal.date(byAdding: .month, value: 6, to: cal.startOfDay(for: base))!
+        
+        let visibleCalendarIDs: [String] = selectedCalendars.isEmpty
+            ? allCalendars.map(\.calendarIdentifier)
+            : allCalendars.compactMap { selectedCalendars.contains($0.calendarIdentifier) ? $0.calendarIdentifier : nil }
+        
+        guard !visibleCalendarIDs.isEmpty else {
+            events = []
+            isLoading = false
+            return
+        }
+        
+        reloadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let calendars = visibleCalendarIDs.compactMap { self.store.calendar(withIdentifier: $0) }
+            let predicate = self.store.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
+            let fetched = self.store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
+            guard !Task.isCancelled, self.loadToken == token else { return }
+            self.events = fetched
+            self.isLoading = false
         }
     }
     
@@ -218,7 +241,6 @@ struct CalendarMainView: View {
     @State private var selectedEvent: EKEvent?
     @State private var currentMonth = Date()
     @State private var showingYearView = false
-    @State private var isHovering = false
 
     var body: some View {
         NavigationStack {
@@ -227,14 +249,8 @@ struct CalendarMainView: View {
                 
                 if hasAccess {
                     VStack(spacing: 0) {
-                        // Header with Hamburger Menu
+                        // Header
                         HStack {
-                            HamburgerMenuButton(
-                                isMenuOpen: $sharedStateManager.isMenuOpen,
-                                isHovering: $isHovering
-                            )
-                            .padding(.leading, 16)
-                            
                             Spacer()
                             
                             CalendarHeader(
@@ -281,10 +297,10 @@ struct CalendarMainView: View {
                         }
                     }
                 } else {
-                    PermissionView(onRequest: { await manager.requestAccess() })
+                    PermissionView(status: manager.authorizationStatus, onRequest: { await manager.requestAccess() })
                 }
             }
-            .navigationBarHidden(true)
+            .navigationBarHiddenIfPossible(true)
             .sheet(isPresented: $showingSettings) {
                 CalendarSettingsView(manager: manager)
             }
@@ -298,8 +314,9 @@ struct CalendarMainView: View {
                 EventDetailView(event: event, manager: manager)
             }
             .onAppear {
-                Task {
-                    await manager.requestAccess()
+                manager.refreshAuthorizationStatus()
+                if manager.canReadEvents {
+                    manager.reloadEvents()
                 }
             }
             .onChange(of: manager.selectedDate) { _, _ in
@@ -309,11 +326,7 @@ struct CalendarMainView: View {
     }
     
     private var hasAccess: Bool {
-        if #available(iOS 17, *) {
-            return manager.authorizationStatus == .fullAccess
-        } else {
-            return manager.authorizationStatus == .authorized
-        }
+        manager.canReadEvents
     }
 }
 
@@ -883,7 +896,7 @@ struct MonthDayCell: View {
             HStack(spacing: 3) {
                 ForEach(Array(events.prefix(3)), id: \.eventIdentifier) { event in
                     Circle()
-                        .fill(Color(event.calendar.cgColor ?? UIColor.systemBlue.cgColor))
+                        .fill(Color(event.calendar.cgColor ?? Color.platformSystemBlueCGColor))
                         .frame(width: 4, height: 4)
                 }
             }
@@ -899,7 +912,7 @@ struct EventRow: View {
     let event: EKEvent
     
     private var eventColor: Color {
-        Color(event.calendar.cgColor ?? UIColor.systemBlue.cgColor)
+        Color(event.calendar.cgColor ?? Color.platformSystemBlueCGColor)
     }
     
     var body: some View {
@@ -960,7 +973,7 @@ struct AllDayEventChip: View {
     let event: EKEvent
     
     private var eventColor: Color {
-        Color(event.calendar.cgColor ?? UIColor.systemBlue.cgColor)
+        Color(event.calendar.cgColor ?? Color.platformSystemBlueCGColor)
     }
     
     var body: some View {
@@ -993,6 +1006,7 @@ struct EventDetailView: View {
     @ObservedObject var manager: CalendarManager
     @Environment(\.dismiss) var dismiss
     @State private var showingDeleteConfirmation = false
+    @State private var showingEdit = false
     
     var body: some View {
         NavigationStack {
@@ -1044,11 +1058,17 @@ struct EventDetailView: View {
                 .padding(20)
             }
             .navigationTitle("Event Details")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Edit") { showingEdit = true }
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showingEdit) {
+                EventEditorView(event: event, startTime: nil, manager: manager)
             }
             .alert("Delete Event", isPresented: $showingDeleteConfirmation) {
                 Button("Cancel", role: .cancel) { }
@@ -1085,9 +1105,9 @@ struct CalendarSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -1108,7 +1128,7 @@ struct CalendarToggleRow: View {
             get: { isSelected },
             set: { _ in manager.toggleCalendar(calendar) }
         ))
-        .tint(Color(calendar.cgColor ?? UIColor.systemBlue.cgColor))
+        .tint(Color(calendar.cgColor ?? Color.platformSystemBlueCGColor))
     }
 }
 
@@ -1279,12 +1299,12 @@ struct UpcomingEventsListView: View {
                 }
             }
             .navigationTitle("Upcoming Events")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingEventEditor = true }) {
                         Image(systemName: "plus")
                             .font(.system(size: 16, weight: .semibold))
@@ -1389,7 +1409,7 @@ struct UpcomingEventRow: View {
     let event: EKEvent
     
     private var eventColor: Color {
-        Color(event.calendar.cgColor ?? UIColor.systemBlue.cgColor)
+        Color(event.calendar.cgColor ?? Color.platformSystemBlueCGColor)
     }
     
     private var timeText: String {
@@ -1486,6 +1506,7 @@ struct UpcomingEventRow: View {
 
 // MARK: - Permission View
 struct PermissionView: View {
+    let status: EKAuthorizationStatus
     let onRequest: () async -> Void
     
     var body: some View {
@@ -1497,24 +1518,58 @@ struct PermissionView: View {
             Text("Calendar Access Required")
                 .font(.system(size: 24, weight: .bold))
             
-            Text("Please grant calendar access to view and manage your events.")
+            Text(message)
                 .font(.system(size: 16))
                 .foregroundColor(DesignSystem.Colors.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             
-            Button(action: { Task { await onRequest() } }) {
-                Text("Grant Access")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(DesignSystem.Colors.accent)
-                    .cornerRadius(12)
+            if status == .notDetermined {
+                Button(action: { Task { await onRequest() } }) {
+                    Text("Grant Access")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(DesignSystem.Colors.accent)
+                        .cornerRadius(12)
+                }
+                .padding(.horizontal, 40)
+            } else {
+                Button(action: openAppSettings) {
+                    Text("Open Settings")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(DesignSystem.Colors.accent)
+                        .cornerRadius(12)
+                }
+                .padding(.horizontal, 40)
             }
-            .padding(.horizontal, 40)
         }
         .padding(40)
+    }
+    
+    private var message: String {
+        if #available(iOS 17, *) {
+            if status == .writeOnly {
+                return "InkSlate currently needs full access to show your existing events. You’ve granted write-only access, which can create events but can’t display your calendar."
+            }
+        }
+        
+        if status == .denied || status == .restricted {
+            return "Calendar access is turned off. You can enable it in Settings to view and manage your events."
+        }
+        
+        return "Please grant calendar access to view and manage your events."
+    }
+    
+    private func openAppSettings() {
+        #if canImport(UIKit)
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+        #endif
     }
 }
 
@@ -1567,7 +1622,9 @@ struct EventEditorView: View {
             Form {
                 Section {
                     TextField("Event Title", text: $title)
+                        #if os(iOS)
                         .textInputAutocapitalization(.words)
+                        #endif
                     Toggle("All Day", isOn: $isAllDay)
                 } header: {
                     Text("Event Details")
@@ -1603,7 +1660,7 @@ struct EventEditorView: View {
                             ForEach(manager.allCalendars.filter { $0.allowsContentModifications }, id: \.calendarIdentifier) { calendar in
                                 HStack {
                                     Circle()
-                                        .fill(Color(calendar.cgColor ?? UIColor.systemBlue.cgColor))
+                                        .fill(Color(calendar.cgColor ?? Color.platformSystemBlueCGColor))
                                         .frame(width: 12, height: 12)
                                     Text(calendar.title)
                                 }
@@ -1614,19 +1671,19 @@ struct EventEditorView: View {
                 }
             }
             .navigationTitle(event == nil ? "New Event" : "Edit Event")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                         .disabled(isSaving)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: saveEvent) {
                         if isSaving {
                             ProgressView()
                                 .scaleEffect(0.8)
                         } else {
-                            Text("Create")
+                            Text(event == nil ? "Create" : "Save")
                                 .fontWeight(.semibold)
                         }
                     }

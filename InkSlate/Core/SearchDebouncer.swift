@@ -22,7 +22,9 @@ class SearchDebouncer: ObservableObject {
         // Debounce search text changes
         $searchText
             .debounce(for: .milliseconds(Int(delay * 1000)), scheduler: DispatchQueue.main)
-            .assign(to: \.debouncedText, on: self)
+            .sink { [weak self] value in
+                self?.debouncedText = value
+            }
             .store(in: &cancellables)
     }
     

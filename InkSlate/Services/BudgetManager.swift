@@ -8,6 +8,7 @@
 import Foundation
 import CoreData
 import SwiftUI
+import Combine
 
 class BudgetManager: ObservableObject {
     static let shared = BudgetManager()

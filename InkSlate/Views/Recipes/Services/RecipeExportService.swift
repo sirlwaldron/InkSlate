@@ -6,7 +6,9 @@
 //
 
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
 import SwiftUI
 
 struct RecipeExportService {
@@ -71,10 +73,13 @@ struct RecipeExportService {
         // Add text
         items.append(exportRecipe(recipe))
         
-        // Add image if available
-        if let imagePath = recipe.imageUrl,
-           let image = RecipeImageStore.loadImage(path: imagePath) {
-            items.append(image)
+        // Add image if available (prefer file URL so it always attaches).
+        if let imagePath = recipe.imageUrl {
+            if let url = RecipeImageStore.fileURL(path: imagePath) {
+                items.append(url)
+            } else if let image = RecipeImageStore.cachedImage(path: imagePath) {
+                items.append(image)
+            }
         }
         
         return items

@@ -13,6 +13,7 @@ import BackgroundTasks
 @main
 struct InkSlateApp: App {
     let persistenceController = PersistenceController.shared
+    @StateObject private var themeService = ThemeService.shared
     
     init() {
         PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "AppInitialization") {
@@ -25,6 +26,11 @@ struct InkSlateApp: App {
             ContentView()
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .environmentObject(SharedStateManager.shared)
+                .environmentObject(themeService)
+                .preferredColorScheme(themeService.isDarkMode ? .dark : .light)
+                .onOpenURL { url in
+                    SharedImportManager.handleIncomingURL(url, in: persistenceController.container.viewContext)
+                }
                 .onAppear {
                     PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "ContentViewOnAppear") {
                         performCleanup()
@@ -33,6 +39,9 @@ struct InkSlateApp: App {
                     Task {
                         await checkCloudKitStatus()
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                    AppLaunchPreferences.markEnteredBackground()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                     Task {
@@ -95,7 +104,11 @@ struct InkSlateApp: App {
             forTaskWithIdentifier: "com.lucas.InkSlateNew.cleanup",
             using: nil
         ) { task in
-            self.handleBackgroundCleanup(task: task as! BGAppRefreshTask)
+            if let processingTask = task as? BGProcessingTask {
+                self.handleBackgroundCleanup(task: processingTask)
+            } else {
+                task.setTaskCompleted(success: false)
+            }
         }
     }
     
@@ -105,15 +118,19 @@ struct InkSlateApp: App {
             return
         }
         
-        let request = BGAppRefreshTaskRequest(identifier: "com.lucas.InkSlateNew.cleanup")
+        let request = BGProcessingTaskRequest(identifier: "com.lucas.InkSlateNew.cleanup")
         request.earliestBeginDate = Calendar.current.date(byAdding: .day, value: 1, to: Date())
+        request.requiresNetworkConnectivity = false
+        request.requiresExternalPower = false
         
         do {
             try BGTaskScheduler.shared.submit(request)
         } catch {
             // Fallback: Schedule a shorter interval for retry
-            let fallbackRequest = BGAppRefreshTaskRequest(identifier: "com.lucas.InkSlateNew.cleanup")
+            let fallbackRequest = BGProcessingTaskRequest(identifier: "com.lucas.InkSlateNew.cleanup")
             fallbackRequest.earliestBeginDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date())
+            fallbackRequest.requiresNetworkConnectivity = false
+            fallbackRequest.requiresExternalPower = false
             do {
                 try BGTaskScheduler.shared.submit(fallbackRequest)
             } catch {
@@ -122,7 +139,7 @@ struct InkSlateApp: App {
         }
     }
     
-    private func handleBackgroundCleanup(task: BGAppRefreshTask) {
+    private func handleBackgroundCleanup(task: BGProcessingTask) {
         // Set expiration handler with proper error handling
         task.expirationHandler = {
             task.setTaskCompleted(success: false)

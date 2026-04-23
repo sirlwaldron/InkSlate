@@ -50,11 +50,30 @@ struct MindMapListView: View {
                     }
                     .tint(.blue)
                 }
+                .contextMenu {
+                    Button {
+                        editingMindMap = mindMap
+                        newMindMapName = mindMap.title ?? "Untitled"
+                        showingAlert = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        viewContext.delete(mindMap)
+                        do {
+                            try viewContext.save()
+                        } catch {
+                            print("Failed to delete mind map: \(error)")
+                        }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         }
         .navigationTitle("Mind Maps")
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button(action: createNewMindMap) {
                     Image(systemName: "plus")
                         .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -117,10 +136,10 @@ struct MindMapDetailView: View {
             breadcrumbView
             mindMapContentView
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .navigationBarBackButtonHidden(navigationStack.isEmpty ? false : true)
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
+            ToolbarItem(placement: .cancellationAction) {
                 if !navigationStack.isEmpty {
                     Button(action: navigateBack) {
                         HStack {
@@ -133,7 +152,7 @@ struct MindMapDetailView: View {
                 }
             }
             
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 HStack {
                     if !navigationStack.isEmpty {
                         Button(action: { showingBreadcrumbs.toggle() }) {
@@ -343,7 +362,7 @@ struct MindMapDetailView: View {
     }
     
     private var backgroundView: some View {
-        Color(.systemBackground)
+        Color.adaptiveSystemBackground
             .ignoresSafeArea()
             .onTapGesture {
                 selectedNodeForAction = nil
@@ -758,16 +777,16 @@ struct EditNodeView: View {
             .padding(DesignSystem.Spacing.lg)
             .background(DesignSystem.Colors.background)
             .navigationTitle("Edit Node")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         onDismiss()
                         dismiss()
                     }
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
                         node.title = title.isEmpty ? "Untitled" : title
                         node.notes = notes
@@ -809,7 +828,7 @@ struct ViewNodeView: View {
                         .fontWeight(.semibold)
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.systemGray6))
+                        .background(Color.adaptiveSystemGray)
                         .cornerRadius(8)
                 }
                 
@@ -823,7 +842,7 @@ struct ViewNodeView: View {
                             .font(.body)
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(.systemGray6))
+                            .background(Color.adaptiveSystemGray)
                             .cornerRadius(8)
                     }
                     .frame(minHeight: 150)
@@ -833,9 +852,9 @@ struct ViewNodeView: View {
             }
             .padding()
             .navigationTitle("View Node")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
@@ -899,11 +918,11 @@ struct BreadcrumbNavigationView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .background(Color(.systemBackground))
+        .background(Color.adaptiveSystemBackground)
         .overlay(
             Rectangle()
                 .frame(height: 0.5)
-                .foregroundColor(Color(.separator)),
+                .foregroundColor(Color.adaptiveSeparator),
             alignment: .bottom
         )
     }
@@ -925,7 +944,7 @@ struct BreadcrumbItemView: View {
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isActive ? Color(.systemGray5) : Color.clear)
+                        .fill(isActive ? Color.adaptiveSystemGray : Color.clear)
                 )
         }
         .disabled(isLast)

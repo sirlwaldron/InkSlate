@@ -9,34 +9,17 @@ import SwiftUI
 
 // MARK: - Main Content View
 struct ContentView: View {
-    @State private var isHovering = false
     @State private var selectedView: MenuViewType = .items
+    @AppStorage("lastSelectedMenuView") private var lastSelectedMenuViewRawValue = MenuViewType.items.rawValue
     @EnvironmentObject var sharedStateManager: SharedStateManager
+    @State private var hasAppliedInitialMainSection = false
 
     var body: some View {
         ZStack {
             // Main app content
             NavigationStack {
                 MainContentView(selectedView: selectedView)
-                    .toolbar(content: {
-                        ToolbarItem(placement: .navigationBarLeading) {
-                            HamburgerMenuButton(
-                                isMenuOpen: $sharedStateManager.isMenuOpen,
-                                isHovering: $isHovering
-                            )
-                        }
-                        
-                    })
             }
-            .overlay(
-                MenuOverlay(isMenuOpen: $sharedStateManager.isMenuOpen)
-            )
-            .overlay(
-                SideMenu(
-                    isMenuOpen: $sharedStateManager.isMenuOpen,
-                    selectedView: $selectedView
-                )
-            )
             .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
             .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
             
@@ -47,7 +30,31 @@ struct ContentView: View {
                 }
                 .transition(.opacity)
             }
+            
+            // Floating launcher (always available)
+            FloatingRadialLauncher(
+                isMenuOpen: $sharedStateManager.isMenuOpen,
+                selectedView: $selectedView
+            )
         }
+        .onAppear {
+            // Cold start: restore the last feature only if the previous run had entered
+            // the background (user left the app normally). If the app was force-terminated
+            // before iOS delivered a background event, the flag is false and we start at home.
+            guard !hasAppliedInitialMainSection else { return }
+            hasAppliedInitialMainSection = true
+            if AppLaunchPreferences.takeShouldRestoreLastMenuAfterColdStart(),
+               let restored = MenuViewType(rawValue: lastSelectedMenuViewRawValue) {
+                selectedView = restored
+            } else {
+                selectedView = .items
+                lastSelectedMenuViewRawValue = MenuViewType.items.rawValue
+            }
+        }
+        .onChange(of: selectedView) { _, newValue in
+            lastSelectedMenuViewRawValue = newValue.rawValue
+        }
+        .withErrorHandling()
     }
 }
 
@@ -86,27 +93,6 @@ struct MainContentView: View {
         }
     }
 }
-
-// MARK: - Menu Overlay
-struct MenuOverlay: View {
-    @Binding var isMenuOpen: Bool
-    
-    var body: some View {
-        Group {
-            if isMenuOpen {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isMenuOpen = false
-                        }
-                    }
-            }
-        }
-    }
-}
-
-
 
 #Preview {
     ContentView()

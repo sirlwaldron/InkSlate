@@ -8,6 +8,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 #if canImport(UIKit)
 import UIKit
@@ -19,32 +20,45 @@ class SharingService: ObservableObject {
     
     private init() {}
     
+    // MARK: - Share Note (iOS: from view controller; macOS: items only, use ShareSheet)
     
-    deinit {
-        
-    }
-    
-    // MARK: - Share Note
-    
+    #if canImport(UIKit)
     func shareNote(_ note: Notes, from view: UIViewController) {
+        guard !note.isEncrypted else {
+            let alert = UIAlertController(
+                title: "Decrypt to Share",
+                message: "This note is locked. Decrypt it before sharing or exporting.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            view.present(alert, animated: true)
+            return
+        }
         let activityViewController = UIActivityViewController(
             activityItems: [note.content ?? ""],
             applicationActivities: nil
         )
-        
-        // Configure for iPad
         if let popover = activityViewController.popoverPresentationController {
             popover.sourceView = view.view
             popover.sourceRect = CGRect(x: view.view.bounds.midX, y: view.view.bounds.midY, width: 0, height: 0)
             popover.permittedArrowDirections = []
         }
-        
         view.present(activityViewController, animated: true)
     }
+    #endif
     
     // MARK: - Export as HTML
     
     func exportAsHTML(_ note: Notes) -> String {
+        if note.isEncrypted {
+            return """
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"></head>
+            <body><p>This note is locked. Decrypt it in InkSlate to export.</p></body>
+            </html>
+            """
+        }
         let html = """
         <!DOCTYPE html>
         <html>
@@ -74,34 +88,62 @@ class SharingService: ObservableObject {
     // MARK: - Export as Markdown
     
     func exportAsMarkdown(_ note: Notes) -> String {
+        if note.isEncrypted {
+            return "# \(note.title ?? "")\n\n( Locked note — decrypt in InkSlate to export. )"
+        }
         return "# \(note.title ?? "")\n\n\(note.content ?? "")"
     }
     
-    // MARK: - Export as PDF
+    // MARK: - Export as PDF (iOS only; macOS returns nil)
     
     func exportAsPDF(_ note: Notes) -> Data? {
+        #if canImport(UIKit)
         let html = exportAsHTML(note)
-        
         let printFormatter = UIMarkupTextPrintFormatter(markupText: html)
         let renderer = UIPrintPageRenderer()
         renderer.addPrintFormatter(printFormatter, startingAtPageAt: 0)
-        
-        let pageSize = CGSize(width: 595, height: 842) // A4 size
+        let pageSize = CGSize(width: 595, height: 842)
         let printableRect = CGRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)
-        
         renderer.setValue(NSValue(cgRect: printableRect), forKey: "paperRect")
         renderer.setValue(NSValue(cgRect: printableRect), forKey: "printableRect")
-        
         let pdfData = NSMutableData()
         UIGraphicsBeginPDFContextToData(pdfData, printableRect, nil)
         UIGraphicsBeginPDFPage()
-        
         renderer.drawPage(at: 0, in: UIGraphicsGetPDFContextBounds())
-        
         UIGraphicsEndPDFContext()
-        
         return pdfData as Data
+        #else
+        return nil
+        #endif
     }
+    
+    #if canImport(UIKit)
+    /// Exports a PDF to a temporary file so the share sheet has a filename + UTType.
+    func exportPDFToTemporaryFile(_ note: Notes) -> URL? {
+        guard let data = exportAsPDF(note) else { return nil }
+        
+        let safeTitle = (note.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? (note.title ?? "Note")
+            : "Note"
+        
+        let fileName = safeTitle
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\n", with: " ")
+            .prefix(80)
+        
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(String(fileName))
+            .appendingPathExtension("pdf")
+        
+        do {
+            try data.write(to: url, options: [.atomic])
+            return url
+        } catch {
+            return nil
+        }
+    }
+    #endif
     
     // MARK: - Private Methods
     
@@ -136,17 +178,18 @@ class SharingService: ObservableObject {
     }
 }
 
-// MARK: - Share Sheet
+// MARK: - Share Sheet (UIKit)
+#if canImport(UIKit)
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
-        return controller
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+#endif
 
 // MARK: - Export Options View
 struct ExportOptionsView: View {
@@ -154,6 +197,7 @@ struct ExportOptionsView: View {
     @Environment(\.dismiss) var dismiss
     @State private var showingShareSheet = false
     @State private var shareItems: [Any] = []
+    @State private var showingLockedAlert = false
     
     var body: some View {
         NavigationView {
@@ -166,8 +210,16 @@ struct ExportOptionsView: View {
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                 
+                if note.isEncrypted {
+                    Text("This note is locked. Decrypt it before exporting.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                
                 VStack(spacing: 16) {
                     Button("Share as Text") {
+                        guard !note.isEncrypted else { showingLockedAlert = true; return }
                         shareItems = [note.content ?? ""]
                         showingShareSheet = true
                     }
@@ -175,6 +227,7 @@ struct ExportOptionsView: View {
                     .frame(maxWidth: .infinity)
                     
                     Button("Export as HTML") {
+                        guard !note.isEncrypted else { showingLockedAlert = true; return }
                         let html = SharingService.shared.exportAsHTML(note)
                         shareItems = [html]
                         showingShareSheet = true
@@ -183,6 +236,7 @@ struct ExportOptionsView: View {
                     .frame(maxWidth: .infinity)
                     
                     Button("Export as Markdown") {
+                        guard !note.isEncrypted else { showingLockedAlert = true; return }
                         let markdown = SharingService.shared.exportAsMarkdown(note)
                         shareItems = [markdown]
                         showingShareSheet = true
@@ -190,30 +244,42 @@ struct ExportOptionsView: View {
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
                     
+                    #if canImport(UIKit)
                     Button("Export as PDF") {
-                        if let pdfData = SharingService.shared.exportAsPDF(note) {
-                            shareItems = [pdfData]
+                        guard !note.isEncrypted else { showingLockedAlert = true; return }
+                        if let pdfURL = SharingService.shared.exportPDFToTemporaryFile(note) {
+                            shareItems = [pdfURL]
                             showingShareSheet = true
                         }
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
+                    #endif
                 }
                 
                 Spacer()
             }
             .padding()
             .navigationTitle("Export")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Cancel") {
                         dismiss()
                     }
                 }
             }
+            #if canImport(UIKit)
             .sheet(isPresented: $showingShareSheet) {
                 ShareSheet(items: shareItems)
+            }
+            #endif
+            .alert("Locked Note", isPresented: $showingLockedAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Decrypt this note before exporting.")
             }
         }
     }

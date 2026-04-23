@@ -9,6 +9,7 @@
 import Foundation
 import SwiftUI
 import CoreData
+import Combine
 
 // MARK: - Enums
 enum SortBy: String, CaseIterable {
@@ -16,6 +17,16 @@ enum SortBy: String, CaseIterable {
     case creationDate = "creationDate"
     case modificationDate = "modificationDate"
     case pin = "pin"
+
+    /// Values match `ProjectSettings.sortBy` saved from folder settings.
+    static func fromProjectSettings(_ raw: String?) -> SortBy {
+        switch raw {
+        case "creationDate": return .creationDate
+        case "title": return .title
+        case "pin": return .pin
+        default: return .modificationDate
+        }
+    }
 }
 
 enum SortDirection: String, CaseIterable {
@@ -62,7 +73,8 @@ class NotesService: ObservableObject {
             note.modifiedDate = Date()
             // Update preview if content changed
             if let content = note.content, !content.isEmpty {
-                note.preview = String(content.prefix(100))
+                let plain = MarkdownSerialization.plainText(from: content)
+                note.preview = plain.isEmpty ? nil : String(plain.prefix(100))
             }
             try context.save()
             return true
@@ -208,9 +220,8 @@ class NotesService: ObservableObject {
     
     func encryptNote(_ note: Notes, password: String, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            // For now, just mark as encrypted - actual encryption would need to be implemented
-            note.isEncrypted = true
-            note.modifiedDate = Date()
+            let ok = EncryptionService.shared.encryptNote(note, password: password)
+            guard ok else { return false }
             try context.save()
             return true
         }, context: "Encrypt note") ?? false
@@ -218,9 +229,8 @@ class NotesService: ObservableObject {
     
     func decryptNote(_ note: Notes, password: String, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            // For now, just mark as not encrypted - actual decryption would need to be implemented
-            note.isEncrypted = false
-            note.modifiedDate = Date()
+            let ok = EncryptionService.shared.decryptNote(note, password: password)
+            guard ok else { return false }
             try context.save()
             return true
         }, context: "Decrypt note") ?? false

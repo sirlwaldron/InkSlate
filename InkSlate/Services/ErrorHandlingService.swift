@@ -8,6 +8,7 @@
 
 import Foundation
 import SwiftUI
+import Combine
 
 // MARK: - Error Types
 enum NotesError: LocalizedError {

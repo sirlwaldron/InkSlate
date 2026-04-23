@@ -9,7 +9,9 @@ import CoreData
 import CloudKit
 import Combine
 import os.log
+#if canImport(UIKit)
 import UIKit
+#endif
 
 // MARK: - PersistenceController
 
@@ -34,15 +36,21 @@ final class PersistenceController: ObservableObject {
         container = NSPersistentCloudKitContainer(name: "InkSlate")
 
         if inMemory {
-            container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
+            if let description = container.persistentStoreDescriptions.first {
+                description.url = URL(fileURLWithPath: "/dev/null")
+            }
         } else {
             guard let description = container.persistentStoreDescriptions.first else {
-                fatalError("Failed to retrieve a persistent store description.")
+                fatalError("InkSlate: No persistent store description. Ensure InkSlate.xcdatamodeld is in the app target.")
             }
 
             // Enable CloudKit syncing
             description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
             description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+            
+            // Enable iOS Data Protection for the Core Data SQLite store.
+            // This reduces exposure of plaintext user content while the device is locked.
+            description.setOption(FileProtectionType.complete as NSObject, forKey: NSPersistentStoreFileProtectionKey)
 
             // Configure CloudKit container
             description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
@@ -84,8 +92,10 @@ final class PersistenceController: ObservableObject {
         // Restore persisted last sync date
         lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
 
-        // Register for CloudKit push notifications
+        #if canImport(UIKit)
+        // Register for CloudKit push notifications (iOS only)
         UIApplication.shared.registerForRemoteNotifications()
+        #endif
 
         // Start monitoring
         setupCloudKitMonitoring()

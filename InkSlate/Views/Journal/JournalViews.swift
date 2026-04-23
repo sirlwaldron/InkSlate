@@ -7,11 +7,13 @@ import SwiftUI
 import CoreData
 import CloudKit
 import os.log
+import Combine
 
 // MARK: - JournalBook Extensions
 extension JournalBook {
     var isDailyJournal: Bool {
-        title?.localizedCaseInsensitiveContains("daily") == true
+        guard let idString = id?.uuidString else { return false }
+        return UserDefaults.standard.string(forKey: JournalDefaults.dailyJournalBookIDKey) == idString
     }
     
     var lastWrittenDate: Date? {
@@ -97,24 +99,8 @@ extension JournalBook {
     }
 }
 
-fileprivate struct JournalPromptMetadata: Codable {
-    let prompt: String
-    let category: String
-    let type: String
-}
-
-fileprivate let promptMetadataEncoder = JSONEncoder()
-fileprivate let promptMetadataDecoder = JSONDecoder()
-
-extension JournalEntry {
-    fileprivate var promptMetadata: JournalPromptMetadata? {
-        guard let tags,
-              let data = tags.data(using: .utf8),
-              let metadata = try? promptMetadataDecoder.decode(JournalPromptMetadata.self, from: data) else {
-            return nil
-        }
-        return metadata
-    }
+fileprivate enum JournalDefaults {
+    static let dailyJournalBookIDKey = "dailyJournalBookID"
 }
 
 // MARK: - Bookshelf View
@@ -170,7 +156,7 @@ struct BookshelfView: View {
             }
             .navigationTitle("Journals")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         lightHaptic()
                         showingNewJournal = true
@@ -232,18 +218,25 @@ struct BookshelfView: View {
     }
     
     private func createDefaultDailyJournalIfNeeded() {
-        let fetchRequest: NSFetchRequest<JournalBook> = JournalBook.fetchRequest()
-        fetchRequest.predicate = NSPredicate(format: "title ==[c] %@", "Daily Journal")
-        fetchRequest.fetchLimit = 1
+        // If we already have a stored daily journal id, ensure it still exists.
+        if let storedID = UserDefaults.standard.string(forKey: JournalDefaults.dailyJournalBookIDKey),
+           let uuid = UUID(uuidString: storedID) {
+            let fetchRequest: NSFetchRequest<JournalBook> = JournalBook.fetchRequest()
+            fetchRequest.predicate = NSPredicate(format: "id == %@", uuid as CVarArg)
+            fetchRequest.fetchLimit = 1
+            if (try? viewContext.fetch(fetchRequest).first) != nil {
+                return
+            }
+        }
         
-        if (try? viewContext.fetch(fetchRequest).first) != nil {
+        // Try to adopt an existing \"Daily Journal\" by title (migration from older behavior).
+        if let existing = books.first(where: { $0.title?.localizedCaseInsensitiveCompare("Daily Journal") == .orderedSame }),
+           let idString = existing.id?.uuidString {
+            UserDefaults.standard.set(idString, forKey: JournalDefaults.dailyJournalBookIDKey)
             return
         }
         
-        guard !books.contains(where: { $0.title?.localizedCaseInsensitiveCompare("Daily Journal") == .orderedSame }) else {
-            return
-        }
-        
+        // Create a new default daily journal and persist its id.
         let dailyJournal = JournalBook(context: viewContext)
         dailyJournal.title = "Daily Journal"
         dailyJournal.color = "#2E7D32"
@@ -252,6 +245,9 @@ struct BookshelfView: View {
         dailyJournal.modifiedDate = Date()
         
         try? viewContext.save()
+        if let idString = dailyJournal.id?.uuidString {
+            UserDefaults.standard.set(idString, forKey: JournalDefaults.dailyJournalBookIDKey)
+        }
     }
 }
 
@@ -367,7 +363,7 @@ struct NewJournalView: View {
                 }
             }
             .navigationTitle("New Journal")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -408,6 +404,7 @@ struct EntriesListView: View {
     @State private var wordCount = 0
     @State private var isRefreshing = false
     @FocusState private var isComposerFocused: Bool
+    @State private var searchText: String = ""
     
     // Use FetchRequest for reactive updates
     @FetchRequest private var entries: FetchedResults<JournalEntry>
@@ -425,6 +422,15 @@ struct EntriesListView: View {
     
     var sortedEntries: [JournalEntry] {
         Array(entries)
+    }
+    
+    private var displayedEntries: [JournalEntry] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return sortedEntries }
+        return sortedEntries.filter { entry in
+            (entry.title ?? "").localizedCaseInsensitiveContains(q) ||
+            (entry.content ?? "").localizedCaseInsensitiveContains(q)
+        }
     }
     
     var body: some View {
@@ -452,9 +458,9 @@ struct EntriesListView: View {
                     if sortedEntries.isEmpty && !book.isDailyJournal {
                         EmptyEntriesState(accentColor: accentColor)
                             .padding(DesignSystem.Spacing.lg)
-                    } else if !sortedEntries.isEmpty {
+                    } else if !displayedEntries.isEmpty {
                         VStack(spacing: DesignSystem.Spacing.sm) {
-                            ForEach(sortedEntries) { entry in
+                            ForEach(displayedEntries) { entry in
                                 NavigationLink {
                                     EditEntryView(book: book, entry: entry)
                                 } label: {
@@ -477,8 +483,9 @@ struct EntriesListView: View {
             }
         }
         .navigationTitle(book.title ?? "Journal")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     lightHaptic()
                     showingNewEntry = true
@@ -712,7 +719,7 @@ struct NewEntryView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("New Entry")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -812,7 +819,7 @@ struct EditEntryView: View {
         }
         .background(DesignSystem.Colors.background)
         .navigationTitle("Edit Entry")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }

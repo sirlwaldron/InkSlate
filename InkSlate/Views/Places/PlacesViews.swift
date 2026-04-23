@@ -7,7 +7,9 @@
 
 import SwiftUI
 import CoreData
+#if canImport(UIKit)
 import UIKit
+#endif
 
 // MARK: - Supporting Types & Helpers
 
@@ -559,9 +561,9 @@ struct AllCategoriesView: View {
             }
         }
         .navigationTitle(type.rawValue)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     lightHaptic()
                     showingNewCategory = true
@@ -577,12 +579,36 @@ struct AllCategoriesView: View {
     
     private func deleteCategory(_ category: PlaceCategory) {
         mediumHaptic()
+        let uncategorized = getOrCreateUncategorizedCategory()
         let placesInCategory = allPlaces.filter { $0.category?.id == category.id }
         for place in placesInCategory {
-            place.category = nil
+            place.category = uncategorized
+            place.modifiedDate = Date()
         }
         viewContext.delete(category)
         try? viewContext.save()
+    }
+    
+    private func getOrCreateUncategorizedCategory() -> PlaceCategory {
+        let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
+        fetch.fetchLimit = 1
+        fetch.predicate = NSPredicate(format: "name == %@ AND type == %@", "Uncategorized", type.rawValue)
+        if let existing = try? viewContext.fetch(fetch).first {
+            return existing
+        }
+        
+        let category = PlaceCategory(context: viewContext)
+        category.id = UUID()
+        category.name = "Uncategorized"
+        category.type = type.rawValue
+        category.icon = "tray"
+        category.color = "#6B7280"
+        category.sortOrder = -1
+        category.createdDate = Date()
+        category.modifiedDate = Date()
+        viewContext.insert(category)
+        try? viewContext.save()
+        return category
     }
 }
 
@@ -636,7 +662,7 @@ struct NewCategoryView: View {
                 }
             }
             .navigationTitle("New Category")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -810,7 +836,7 @@ struct QuickAddPlaceView: View {
                 }
             }
             .navigationTitle("Add Place")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -913,11 +939,12 @@ struct PlacesListView: View {
         if wishlistOnly {
             filtered = Array(allPlaces).filter { !$0.isVisited }
         } else if favoritesOnly {
-            filtered = Array(allPlaces).filter { $0.isVisited && $0.rating >= 8 }
+            filtered = Array(allPlaces).filter { $0.isFavorite }
         } else if let category = category {
             filtered = Array(allPlaces).filter { $0.category?.id == category.id }
         } else {
-            filtered = []
+            // "All Places" view (includes uncategorized).
+            filtered = Array(allPlaces)
         }
         
         // Apply search filter
@@ -939,7 +966,7 @@ struct PlacesListView: View {
     
     private var title: String {
         if wishlistOnly { return "Wishlist" }
-        if favoritesOnly { return "Top Rated" }
+        if favoritesOnly { return "Favorites" }
         return category?.name ?? "Places"
     }
     
@@ -1006,9 +1033,9 @@ struct PlacesListView: View {
             }
         }
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
             Button {
                     lightHaptic()
                 showingNewPlace = true
@@ -1083,7 +1110,7 @@ struct PlaceCard: View {
     let type: PlaceType
     let onTap: () -> Void
     
-    @State private var photoImage: UIImage?
+    @State private var photoImage: PlatformImage?
     
     var body: some View {
         Button(action: onTap) {
@@ -1091,7 +1118,7 @@ struct PlaceCard: View {
                 // Photo or Placeholder
                 ZStack {
             if let image = photoImage {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
                             .frame(width: 64, height: 64)
@@ -1194,7 +1221,7 @@ struct PlaceCard: View {
 struct PlaceDetailView: View {
     let place: Place
     @State private var showingEditSheet = false
-    @State private var photoImage: UIImage?
+    @State private var photoImage: PlatformImage?
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -1206,7 +1233,7 @@ struct PlaceDetailView: View {
                     VStack(spacing: DesignSystem.Spacing.lg) {
                     // Photo Section
                     if let image = photoImage {
-                        Image(uiImage: image)
+                        Image(platformImage: image)
                             .resizable()
                             .scaledToFill()
                                 .frame(height: 220)
@@ -1290,7 +1317,7 @@ struct PlaceDetailView: View {
                 }
             }
             .navigationTitle("Details")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
@@ -1298,7 +1325,7 @@ struct PlaceDetailView: View {
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Edit") {
                         showingEditSheet = true
                     }
@@ -1581,6 +1608,7 @@ struct PlaceEditorView: View {
     @State private var notes = ""
     @State private var dishRecommendations = ""
     @State private var hasVisited = false
+    @State private var isFavorite = false
     @State private var wouldReturn = true
     @State private var rating: Double = 5
     @State private var priceRating: Double = 5
@@ -1588,7 +1616,7 @@ struct PlaceEditorView: View {
     @State private var atmosphereRating: Double = 5
     @State private var funFactorRating: Double = 5
     @State private var sceneryRating: Double = 5
-    @State private var selectedImage: UIImage?
+    @State private var selectedImage: PlatformImage?
     @State private var showingImagePicker = false
     @State private var selectedCategory: PlaceCategory?
     @State private var dateVisited = Date()
@@ -1616,6 +1644,7 @@ struct PlaceEditorView: View {
         _address = State(initialValue: place?.address ?? "")
         _notes = State(initialValue: place?.notes ?? "")
         _hasVisited = State(initialValue: place?.isVisited ?? false)
+        _isFavorite = State(initialValue: place?.isFavorite ?? false)
         _rating = State(initialValue: Double(place?.rating ?? 5))
         _dateVisited = State(initialValue: place?.visitedDate ?? Date())
         _location = State(initialValue: place?.city ?? "")
@@ -1666,7 +1695,7 @@ struct PlaceEditorView: View {
                 }
             }
             .navigationTitle(place == nil ? "New Place" : "Edit Place")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -1717,7 +1746,7 @@ struct PlaceEditorView: View {
                 showingImagePicker = true
             } label: {
                     if let image = selectedImage {
-                        Image(uiImage: image)
+                        Image(platformImage: image)
                             .resizable()
                         .scaledToFill()
                         .frame(height: 180)
@@ -1878,6 +1907,17 @@ struct PlaceEditorView: View {
                 .foregroundColor(DesignSystem.Colors.textPrimary)
             
             VStack(spacing: DesignSystem.Spacing.md) {
+                Toggle(isOn: $isFavorite) {
+                    HStack(spacing: DesignSystem.Spacing.sm) {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .foregroundColor(isFavorite ? DesignSystem.Colors.warning : DesignSystem.Colors.textTertiary)
+                        Text("Favorite")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                    }
+                }
+                .tint(DesignSystem.Colors.warning)
+                
                 Toggle(isOn: $hasVisited) {
                     HStack(spacing: DesignSystem.Spacing.sm) {
                         Image(systemName: hasVisited ? "checkmark.circle.fill" : "circle")
@@ -1979,6 +2019,7 @@ struct PlaceEditorView: View {
             existingPlace.city = location
             existingPlace.notes = notes
             existingPlace.isVisited = hasVisited
+            existingPlace.isFavorite = isFavorite
             existingPlace.rating = ratingInt
             existingPlace.visitedDate = hasVisited ? dateVisited : nil
             existingPlace.category = selectedCategory
@@ -2021,6 +2062,7 @@ struct PlaceEditorView: View {
             newPlace.city = location
             newPlace.notes = notes
             newPlace.isVisited = hasVisited
+            newPlace.isFavorite = isFavorite
             newPlace.rating = ratingInt
             newPlace.visitedDate = hasVisited ? dateVisited : nil
             newPlace.category = selectedCategory
@@ -2115,8 +2157,9 @@ struct ScaleButtonStyle: ButtonStyle {
 }
 
 // MARK: - Image Picker
+#if canImport(UIKit)
 struct ImagePicker: UIViewControllerRepresentable {
-    @Binding var image: UIImage?
+    @Binding var image: PlatformImage?
     @Environment(\.dismiss) var dismiss
     
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -2124,29 +2167,40 @@ struct ImagePicker: UIViewControllerRepresentable {
         picker.delegate = context.coordinator
         return picker
     }
-    
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-    
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
     class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: ImagePicker
-        
-        init(_ parent: ImagePicker) {
-            self.parent = parent
-        }
-        
+        init(_ parent: ImagePicker) { self.parent = parent }
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let image = info[.originalImage] as? UIImage {
-                parent.image = image
-            }
+            if let img = info[.originalImage] as? UIImage { parent.image = img }
             parent.dismiss()
         }
-        
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.dismiss()
-        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
     }
 }
+#elseif canImport(AppKit)
+import AppKit
+import UniformTypeIdentifiers
+struct ImagePicker: View {
+    @Binding var image: PlatformImage?
+    @Environment(\.dismiss) var dismiss
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Choose an image")
+            Button("Choose Image…") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.png, .jpeg]
+                panel.allowsMultipleSelection = false
+                if panel.runModal() == .OK, let url = panel.url,
+                   let data = try? Data(contentsOf: url),
+                   let img = platformImage(from: data) { image = img }
+                dismiss()
+            }
+            Button("Cancel") { dismiss() }
+        }
+        .padding()
+        .frame(minWidth: 260, minHeight: 100)
+    }
+}
+#endif

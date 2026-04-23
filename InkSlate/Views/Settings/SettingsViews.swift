@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var showingMenuReorder = false
     @State private var showingPrivacySettings = false
     @State private var showingProfileCustomization = false
+    @State private var showingThemeSettings = false
     @State private var showingCloudKitTroubleshooting = false
     @State private var showingFactoryResetWarning = false
     @State private var showingFactoryResetConfirmation = false
@@ -43,6 +44,23 @@ struct SettingsView: View {
                             .foregroundColor(DesignSystem.Colors.accent)
                             .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
                         Text("Customize Profile")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .font(.caption)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                    }
+                }
+                .foregroundColor(.primary)
+                
+                Button {
+                    showingThemeSettings = true
+                } label: {
+                    HStack {
+                        Image(systemName: "paintbrush")
+                            .foregroundColor(DesignSystem.Colors.accent)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                        Text("Theme Settings")
                         Spacer()
                         Image(systemName: "chevron.right")
                             .foregroundColor(DesignSystem.Colors.textSecondary)
@@ -154,6 +172,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingProfileCustomization) {
             ProfileCustomizationView(profileService: ProfileService())
+        }
+        .sheet(isPresented: $showingThemeSettings) {
+            ThemeSettingsView()
         }
         .sheet(isPresented: $showingCloudKitTroubleshooting) {
             CloudKitTroubleshootingView()
@@ -327,26 +348,7 @@ struct SettingsView: View {
             // Clear all UserDefaults with specific keys
             let defaults = UserDefaults.standard
             
-            // Clear all InkSlate-specific UserDefaults keys
-            let inkSlateKeys = [
-                "MenuOrder",
-                "HiddenMenuItems", 
-                "lastSyncDate",
-                "lastSelectedFolderID",
-                "profileUserName",
-                "profileUserIcon",
-                "profileUserImage",
-                "lastQuoteDate",
-                "currentQuoteId"
-            ]
-            
-            for key in inkSlateKeys {
-                defaults.removeObject(forKey: key)
-            }
-            
-            // Clear all other UserDefaults (nuclear option)
-            let dictionary = defaults.dictionaryRepresentation()
-            for key in dictionary.keys {
+            for key in InkSlateUserDefaultsKeys.all {
                 defaults.removeObject(forKey: key)
             }
             defaults.synchronize()
@@ -401,17 +403,62 @@ struct SettingsView: View {
         guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return
         }
+        let appOwnedRelativePaths = [
+            "profile-user-image.jpg",
+            "RecipeImages"
+        ]
         
-        if let fileURLs = try? fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: []) {
-            for fileURL in fileURLs {
+        for relativePath in appOwnedRelativePaths {
+            let url = documentsURL.appendingPathComponent(relativePath, isDirectory: relativePath == "RecipeImages")
+            if fileManager.fileExists(atPath: url.path) {
                 do {
-                    try fileManager.removeItem(at: fileURL)
+                    try fileManager.removeItem(at: url)
                 } catch {
-                    print("Failed to remove \(fileURL.lastPathComponent): \(error)")
+                    print("Failed to remove \(relativePath): \(error)")
                 }
             }
         }
     }
+}
+
+// MARK: - App-owned UserDefaults keys
+enum InkSlateUserDefaultsKeys {
+    static let all: [String] = [
+        // Menu customization
+        "MenuOrder",
+        "HiddenMenuItems",
+        
+        // Notes
+        "lastSelectedFolderID",
+        
+        // Calendar
+        "selectedCalendarIdentifiers",
+        
+        // Profile
+        "profileUserName",
+        "profileUserIcon",
+        "profileUserImage",
+        
+        // Quotes
+        "lastQuoteDate",
+        "currentQuoteId",
+        
+        // Privacy
+        "privacy.analyticsEnabled",
+        "privacy.crashReportingEnabled",
+        "privacy.dataCollectionEnabled",
+        
+        // Theme
+        "theme.isDarkMode",
+        "theme.dynamicFonts",
+        "theme.fontSize",
+        
+        // Navigation state
+        "lastSelectedMenuView",
+        
+        // Sync bookkeeping (if used)
+        "lastSyncDate"
+    ]
 }
 
 // MARK: - Menu Reorder View
@@ -473,14 +520,14 @@ struct MenuReorderView: View {
                 }
             }
             .navigationTitle("Customize Menu")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
                         saveMenuConfiguration()
                         dismiss()
@@ -592,13 +639,23 @@ struct MenuReorderView: View {
 struct PrivacySettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    @State private var analyticsEnabled = false
-    @State private var crashReportingEnabled = true
-    @State private var dataCollectionEnabled = false
+    @AppStorage("privacy.analyticsEnabled") private var analyticsEnabled = false
+    @AppStorage("privacy.crashReportingEnabled") private var crashReportingEnabled = true
+    @AppStorage("privacy.dataCollectionEnabled") private var dataCollectionEnabled = false
     
     var body: some View {
         NavigationView {
             Form {
+                Section("Content Security") {
+                    Text("Notes and journal entries are stored on-device and may sync via iCloud (CloudKit). They are not end-to-end encrypted by InkSlate by default.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Text("If you need additional protection, encrypt individual notes using the lock option in the note editor. Encrypted notes require a password to open.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                
                 Section("Legal") {
                     if let url = URL(string: AppLegalURLs.privacyPolicy) {
                         Link("Privacy Policy", destination: url)
@@ -608,18 +665,17 @@ struct PrivacySettingsView: View {
                     }
                 }
                 
-                Section("Analytics & Privacy") {
+                Section {
                     Toggle("Analytics", isOn: $analyticsEnabled)
                     Toggle("Crash Reporting", isOn: $crashReportingEnabled)
                     Toggle("Data Collection", isOn: $dataCollectionEnabled)
+                } header: {
+                    Text("Analytics & Privacy")
+                } footer: {
+                    Text("InkSlate does not currently integrate a third-party analytics or crash reporting SDK in this repo. These toggles are stored for future integrations and to support opt-out by default.")
                 }
                 
                 Section("Data Control") {
-                    Button("Clear All Data") {
-                        clearAllData()
-                    }
-                    .foregroundColor(.red)
-                    
                     Button("Reset Privacy Settings") {
                         resetPrivacySettings()
                     }
@@ -627,19 +683,15 @@ struct PrivacySettingsView: View {
                 }
             }
             .navigationTitle("Privacy Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
                 }
             }
         }
-    }
-    
-    private func clearAllData() {
-        // Implement data clearing logic
     }
     
     private func resetPrivacySettings() {

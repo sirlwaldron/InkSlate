@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 import CoreData
 
 // MARK: - Discover Main View
@@ -39,14 +40,16 @@ struct DiscoverMainView: View {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 40))
                             .foregroundColor(DesignSystem.Colors.textTertiary)
-                        Text("No results found")
+                        Text(searchManager.errorMessage == nil ? "No results found" : "Search unavailable")
                             .font(DesignSystem.Typography.title3)
                             .fontWeight(.medium)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
-                        Text("Try a different search term")
+                        Text(searchManager.errorMessage ?? "Try a different search term")
                             .font(DesignSystem.Typography.subheadline)
                             .foregroundColor(DesignSystem.Colors.textTertiary)
+                            .multilineTextAlignment(.center)
                     }
+                    .padding(.horizontal, DesignSystem.Spacing.xl)
                     Spacer()
                 } else if searchManager.results.isEmpty && searchText.isEmpty {
                     Spacer()
@@ -250,7 +253,7 @@ struct DiscoverDetailView: View {
                             .aspectRatio(contentMode: .fill)
                     } placeholder: {
                         Rectangle()
-                            .fill(Color(.systemGray5))
+                            .fill(Color.adaptiveSystemGray)
                             .overlay(
                                 Image(systemName: item.isMovie ? "film" : "tv")
                                     .font(.system(size: 48))
@@ -330,9 +333,9 @@ struct DiscoverDetailView: View {
                     .padding(.horizontal)
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
@@ -437,6 +440,7 @@ struct DiscoverDetailView: View {
 class SearchManager: ObservableObject {
     @Published var results: [TMDBItem] = []
     @Published var isLoading = false
+    @Published var errorMessage: String?
     
     private let tmdbService = TMDBService.shared
     private var searchTask: Task<Void, Never>?
@@ -446,6 +450,7 @@ class SearchManager: ObservableObject {
         
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             results = []
+            errorMessage = nil
             return
         }
         
@@ -455,16 +460,20 @@ class SearchManager: ObservableObject {
             }
             
             do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+                try Task.checkCancellation()
                 let searchResults = try await tmdbService.searchMulti(query: query)
                 
                 await MainActor.run {
                     self.results = searchResults
                     self.isLoading = false
+                    self.errorMessage = nil
                 }
             } catch {
                 await MainActor.run {
                     self.results = []
                     self.isLoading = false
+                    self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 }
             }
         }

@@ -6,10 +6,17 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Color Extension for Light/Dark Mode
 extension Color {
     init(light: Color, dark: Color) {
+        #if canImport(UIKit)
         self.init(UIColor { traitCollection in
             switch traitCollection.userInterfaceStyle {
             case .light, .unspecified:
@@ -20,6 +27,16 @@ extension Color {
                 return UIColor(light)
             }
         })
+        #elseif canImport(AppKit)
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+                return NSColor(dark)
+            }
+            return NSColor(light)
+        })
+        #else
+        self = light
+        #endif
     }
 }
 
@@ -384,18 +401,58 @@ struct RefreshControl: View {
     }
 }
 
+// MARK: - Cross-platform navigation (iOS-only modifiers no-op on macOS)
+extension View {
+    @ViewBuilder
+    func inlineNavigationTitle() -> some View {
+        #if os(iOS)
+        self.navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
+    }
+    @ViewBuilder
+    func navigationBarHiddenIfPossible(_ hidden: Bool) -> some View {
+        #if os(iOS)
+        self.navigationBarHidden(hidden)
+        #else
+        self
+        #endif
+    }
+    @ViewBuilder
+    func fullScreenCoverIfAvailable<Content: View>(isPresented: Binding<Bool>, content: @escaping () -> Content) -> some View {
+        #if os(iOS)
+        self.fullScreenCover(isPresented: isPresented, content: content)
+        #else
+        self.sheet(isPresented: isPresented, content: content)
+        #endif
+    }
+}
+
 // MARK: - Haptic Feedback
 func lightHaptic() {
+    #if canImport(UIKit)
     let impactFeedback = UIImpactFeedbackGenerator(style: .light)
     impactFeedback.impactOccurred()
+    #elseif canImport(AppKit)
+    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    #endif
 }
 
 func mediumHaptic() {
+    #if canImport(UIKit)
     let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
     impactFeedback.impactOccurred()
+    #elseif canImport(AppKit)
+    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+    #endif
 }
 
 func heavyHaptic() {
+    #if canImport(UIKit)
     let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
     impactFeedback.impactOccurred()
+    #elseif canImport(AppKit)
+    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+    #endif
 }

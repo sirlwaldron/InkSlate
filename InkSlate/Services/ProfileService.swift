@@ -5,12 +5,13 @@
 
 import SwiftUI
 import Foundation
+import Combine
 
 // MARK: - Profile Service
 class ProfileService: ObservableObject {
     @Published var userName: String = "User"
     @Published var userIcon: String = "person.circle.fill"
-    @Published var userImage: UIImage?
+    @Published var userImage: PlatformImage?
     
     private let userDefaults = UserDefaults.standard
     private let cloudStore = NSUbiquitousKeyValueStore.default
@@ -86,15 +87,19 @@ class ProfileService: ObservableObject {
             userIcon = "person.circle.fill"
         }
         
-        if let storedImage = loadImageFromDisk() {
-            userImage = storedImage
-        } else if let legacyData = cloudStore.data(forKey: userImageKey) ?? userDefaults.data(forKey: userImageKey),
-                  let image = UIImage(data: legacyData) {
-            // Migrate legacy data into local storage
-            userImage = image
-            saveImageToDisk(legacyData)
-            cloudStore.removeObject(forKey: userImageKey)
-            userDefaults.removeObject(forKey: userImageKey)
+        Task { @MainActor in
+            if let storedImage = await loadImageFromDiskAsync() {
+                userImage = storedImage
+            } else if let legacyData = cloudStore.data(forKey: userImageKey) ?? userDefaults.data(forKey: userImageKey),
+                      let image = platformImage(from: legacyData) {
+                // Migrate legacy data into local storage
+                userImage = image
+                saveImageToDisk(legacyData)
+                cloudStore.removeObject(forKey: userImageKey)
+                userDefaults.removeObject(forKey: userImageKey)
+            } else {
+                userImage = nil
+            }
         }
         
         // Synchronize iCloud store
@@ -115,11 +120,16 @@ class ProfileService: ObservableObject {
         userDefaults.set(icon, forKey: userIconKey)
     }
     
-    func updateProfileImage(_ image: UIImage) {
+    func updateProfileImage(_ image: PlatformImage) {
         userImage = image
         if let imageData = image.jpegData(compressionQuality: 0.8) {
             saveImageToDisk(imageData)
         }
+    }
+    
+    func removeProfileImage() {
+        userImage = nil
+        removeStoredImage()
     }
     
     func resetToDefaults() {
@@ -142,6 +152,10 @@ class ProfileService: ObservableObject {
         guard let url = imageFileURL() else { return }
         do {
             try data.write(to: url, options: [.atomic])
+            try? FileManager.default.setAttributes(
+                [FileAttributeKey.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: url.path
+            )
         } catch {
             #if DEBUG
             print("Failed to write profile image to disk: \(error)")
@@ -149,13 +163,15 @@ class ProfileService: ObservableObject {
         }
     }
     
-    private func loadImageFromDisk() -> UIImage? {
+    private func loadImageFromDiskAsync() async -> PlatformImage? {
         guard let url = imageFileURL(),
-              FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data)
-        else { return nil }
-        return image
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        
+        return await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: url),
+                  let image = platformImage(from: data) else { return nil }
+            return image
+        }.value
     }
     
     private func removeStoredImage() {

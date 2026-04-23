@@ -4,7 +4,9 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 import Foundation
 import UniformTypeIdentifiers
 
@@ -193,11 +195,20 @@ private extension UITextView {
         textStorage.endEditing()
     }
 
-    func setAttributedStringUndoSafe(_ m: NSAttributedString) {
+    /// - Parameter recordUndo: `false` for SwiftUI/binding sync (prevents a huge “replace all” on the shared undo stack, like when Word reloads a document from disk). `true` for in-editor edits.
+    func setAttributedString(_ m: NSAttributedString, recordUndo: Bool) {
+        if !recordUndo, let u = undoManager {
+            u.disableUndoRegistration()
+        }
+        defer {
+            if !recordUndo, let u = undoManager { u.enableUndoRegistration() }
+        }
         textStorage.beginEditing()
         textStorage.setAttributedString(m)
         textStorage.endEditing()
     }
+    func setAttributedStringForBindingSync(_ m: NSAttributedString) { setAttributedString(m, recordUndo: false) }
+    func setAttributedStringUndoSafe(_ m: NSAttributedString) { setAttributedString(m, recordUndo: true) }
 }
 
 private extension UIViewController {
@@ -243,11 +254,10 @@ struct MarkdownEditor: UIViewRepresentable {
 
         textView.delegate = context.coordinator
         textView.pasteDelegate = context.coordinator
-        textView.undoManager?.levelsOfUndo = 50
 
-        // Load text
+        // Load text (no undo point for initial load, same as opening a file in Word)
         let attributed = context.coordinator.deserializeContent(text)
-        textView.attributedText = attributed
+        textView.setAttributedStringForBindingSync(attributed)
         
         context.coordinator.textView = textView
         MarkdownEditor.activeCoordinator = context.coordinator
@@ -262,16 +272,17 @@ struct MarkdownEditor: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: EditorTextView, context: Context) {
-        guard !uiView.isFirstResponder else { return }
-
+        // Keep the binding reference current so `Coordinator.parent` writes always target the right note.
+        context.coordinator.parent = self
         context.coordinator.textView = uiView
+        guard !uiView.isFirstResponder else { return }
         let latest = context.coordinator.serializeContent(from: uiView.attributedText)
         guard latest != text else { return }
 
         DispatchQueue.main.async {
             let range = uiView.selectedRange
             let attributed = context.coordinator.deserializeContent(text)
-            uiView.setAttributedStringUndoSafe(attributed)
+            uiView.setAttributedStringForBindingSync(attributed)
             if range.location <= uiView.attributedText.length {
                 uiView.selectedRange = range
             }
@@ -292,6 +303,18 @@ struct MarkdownEditor: UIViewRepresentable {
         var parent: MarkdownEditor
         weak var textView: EditorTextView?
         private var isProgrammaticChange = false
+        
+        /// One toolbar or custom key action = one undo step; avoids nested group imbalance if the system already has a group open.
+        private static func withUndoGroup(in tv: UITextView, _ work: () -> Void) {
+            guard let um = tv.undoManager else {
+                work()
+                return
+            }
+            let startLevel = um.groupingLevel
+            um.beginUndoGrouping()
+            work()
+            if um.groupingLevel > startLevel { um.endUndoGrouping() }
+        }
 
         private var saveWorkItem: DispatchWorkItem?
         private var styleCalculationWorkItem: DispatchWorkItem?
@@ -307,8 +330,12 @@ struct MarkdownEditor: UIViewRepresentable {
             styleCalculationWorkItem?.cancel()
             fontCache.removeAll()
             
-            // Clear active coordinator reference
-            MarkdownEditor.activeCoordinator = nil
+            // Only clear if this instance is still the global active editor. Otherwise
+            // opening another note dismisses the previous one and deinit here would
+            // nil out the new editor and break the formatting toolbar and WysiwygActionHandler.
+            if MarkdownEditor.activeCoordinator === self {
+                MarkdownEditor.activeCoordinator = nil
+            }
             
             // Post final update to clear UI state
             DispatchQueue.main.async {
@@ -320,6 +347,18 @@ struct MarkdownEditor: UIViewRepresentable {
             }
         }
 
+        /// Pushes the live `textView` into the SwiftUI `text` binding and cancels
+        /// debounced updates. Call before save / dismiss / preview so Core Data
+        /// does not lag up to 0.3s behind the UITextView.
+        func flushPendingEditsToParent() {
+            saveWorkItem?.cancel()
+            styleCalculationWorkItem?.cancel()
+            guard let textView = textView else { return }
+            let serialized = serializeContent(from: textView.attributedText)
+            parent.text = serialized
+            parent.selectedRange = textView.selectedRange
+        }
+        
         // MARK: Serialization
         
         func serializeContent(from attributed: NSAttributedString) -> String {
@@ -380,14 +419,19 @@ struct MarkdownEditor: UIViewRepresentable {
 
         func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText string: String) -> Bool {
             if string == "\n" {
-                if let etv = tv as? EditorTextView, WysiwygActionHandler.handleReturn(in: etv) {
-                    return false
+                if let etv = tv as? EditorTextView {
+                    var handled = false
+                    Self.withUndoGroup(in: tv) { handled = WysiwygActionHandler.handleReturn(in: etv) }
+                    if handled {
+                        serializeAfterAttributeChange(in: tv)
+                        return false
+                    }
                 }
             }
-            // Handle Tab key for indenting lists
             if string == "\t" {
                 if let etv = tv as? EditorTextView {
-                    WysiwygActionHandler.apply(.indent, to: etv)
+                    Self.withUndoGroup(in: tv) { WysiwygActionHandler.apply(.indent, to: etv) }
+                    serializeAfterAttributeChange(in: tv)
                     return false
                 }
             }
@@ -414,11 +458,12 @@ struct MarkdownEditor: UIViewRepresentable {
 
             switch action {
             case .undo:
-                tv.undoManager?.undo()
-                // Recalculate typing modes based on current cursor position
+                guard let um = tv.undoManager, um.canUndo else { return }
+                isProgrammaticChange = true
+                defer { isProgrammaticChange = false }
+                um.undo()
                 typingModes.removeAll()
                 applyTypingAttributes(in: tv)
-                // Direct serialization instead of serializeAndPublishContent
                 parent.text = serializeContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
@@ -426,11 +471,12 @@ struct MarkdownEditor: UIViewRepresentable {
                                                 userInfo: ["styles": currentActiveStyles(in: tv)])
                 return
             case .redo:
-                tv.undoManager?.redo()
-                // Recalculate typing modes based on current cursor position
+                guard let um = tv.undoManager, um.canRedo else { return }
+                isProgrammaticChange = true
+                defer { isProgrammaticChange = false }
+                um.redo()
                 typingModes.removeAll()
                 applyTypingAttributes(in: tv)
-                // Direct serialization instead of serializeAndPublishContent
                 parent.text = serializeContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
@@ -447,12 +493,7 @@ struct MarkdownEditor: UIViewRepresentable {
 
             isProgrammaticChange = true
             defer { isProgrammaticChange = false }  // Ensures cleanup even if error occurs
-            
-            tv.undoManager?.beginUndoGrouping()
-            
-            WysiwygActionHandler.apply(action, to: tv)
-            
-            tv.undoManager?.endUndoGrouping()
+            Self.withUndoGroup(in: tv) { WysiwygActionHandler.apply(action, to: tv) }
 
             // Direct serialization instead of serializeAndPublishContent
             parent.text = serializeContent(from: tv.attributedText)
@@ -485,7 +526,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 guard !urlString.isEmpty, let url = URL(string: urlString), url.scheme != nil else { return }
                 
                 let sel = textView.selectedRange
-                textView.undoManager?.beginUndoGrouping()
+                Self.withUndoGroup(in: textView) {
                 if sel.length == 0 {
                     let linkText = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host ?? urlString
                     let insertion = NSMutableAttributedString(string: linkText)
@@ -497,10 +538,9 @@ struct MarkdownEditor: UIViewRepresentable {
                     textView.textStorage.addAttribute(.link, value: url, range: sel)
                     textView.textStorage.endEditing()
                     textView.selectedRange = sel
-                    // Serialize after attribute-only change
                     strongSelf.serializeAfterAttributeChange(in: textView)
                 }
-                textView.undoManager?.endUndoGrouping()
+                }
             })
             guard let topVC = currentTopVC() else {
                 print("Warning: Unable to present alert - no view controller available")
@@ -577,46 +617,92 @@ struct MarkdownEditor: UIViewRepresentable {
         
 
         fileprivate func currentActiveStyles(in tv: UITextView) -> Set<MarkdownAction> {
-            var set = typingModes
-            let idx = max(0, min(tv.selectedRange.location, max(0, tv.attributedText.length - 1)))
-            let attrs = tv.attributedText.length > 0 ? tv.attributedText.attributes(at: idx, effectiveRange: nil) : tv.typingAttributes
-
+            EditorStyleState.activeStyles(
+                typingModes: typingModes,
+                attributedText: tv.attributedText,
+                selectedRange: tv.selectedRange,
+                typingAttributes: tv.typingAttributes,
+                currentLine: (tv as? EditorTextView)?.currentLineString() ?? ""
+            )
+        }
+        
+        fileprivate func setTypingModesFromAttributes(_ attrs: [NSAttributedString.Key: Any], in tv: UITextView) {
+            var newModes = Set<MarkdownAction>()
             if let f = (attrs[.font] as? UIFont) {
                 let traits = f.fontDescriptor.symbolicTraits
-                if traits.contains(.traitBold) { set.insert(.bold) } else { set.remove(.bold) }
-                if traits.contains(.traitItalic) { set.insert(.italic) } else { set.remove(.italic) }
+                if traits.contains(.traitBold) { newModes.insert(.bold) }
+                if traits.contains(.traitItalic) { newModes.insert(.italic) }
             }
-            if (attrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue { set.insert(.underline) } else { set.remove(.underline) }
-            if (attrs[.strikethroughStyle] as? Int) == NSUnderlineStyle.single.rawValue { set.insert(.strikethrough) } else { set.remove(.strikethrough) }
-
-            // Use cached regex patterns for better performance
-            let line = (tv as? EditorTextView)?.currentLineString() ?? ""
-            let lineRange = NSRange(line.startIndex..., in: line)
-            if WysiwygActionHandler.bulletRegex.firstMatch(in: line, range: lineRange) != nil {
-                set.insert(.bulletList)
-            } else {
-                set.remove(.bulletList)
-            }
-            if WysiwygActionHandler.numberedRegex.firstMatch(in: line, range: lineRange) != nil {
-                set.insert(.numberedList)
-            } else {
-                set.remove(.numberedList)
-            }
-
-            return set
+            if (attrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue { newModes.insert(.underline) }
+            if (attrs[.strikethroughStyle] as? Int) == NSUnderlineStyle.single.rawValue { newModes.insert(.strikethrough) }
+            typingModes = newModes
+            applyTypingAttributes(in: tv)
         }
+    }
+}
+
+// MARK: - Active style calculation (shared + testable)
+enum EditorStyleState {
+    static func activeStyles(
+        typingModes: Set<MarkdownAction>,
+        attributedText: NSAttributedString,
+        selectedRange: NSRange,
+        typingAttributes: [NSAttributedString.Key: Any],
+        currentLine: String
+    ) -> Set<MarkdownAction> {
+        var set = typingModes
+        
+        let attrs: [NSAttributedString.Key: Any] = {
+            if attributedText.length == 0 {
+                return typingAttributes
+            }
+            
+            // If there's no selection and the caret is at the end, reflect the next-typed state.
+            if selectedRange.length == 0, selectedRange.location >= attributedText.length {
+                return typingAttributes
+            }
+            
+            let idx = max(0, min(selectedRange.location, attributedText.length - 1))
+            return attributedText.attributes(at: idx, effectiveRange: nil)
+        }()
+        
+        if let f = (attrs[.font] as? UIFont) {
+            let traits = f.fontDescriptor.symbolicTraits
+            if traits.contains(.traitBold) { set.insert(.bold) } else { set.remove(.bold) }
+            if traits.contains(.traitItalic) { set.insert(.italic) } else { set.remove(.italic) }
+        }
+        if (attrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue { set.insert(.underline) } else { set.remove(.underline) }
+        if (attrs[.strikethroughStyle] as? Int) == NSUnderlineStyle.single.rawValue { set.insert(.strikethrough) } else { set.remove(.strikethrough) }
+        
+        // List state from current line (Word-style: •/◦/▪, 1., a), 1) …)
+        let lineRange = NSRange(currentLine.startIndex..., in: currentLine)
+        if WordListLineKind.detectBullet(in: currentLine, lineRange) != nil {
+            set.insert(.bulletList)
+        } else {
+            set.remove(.bulletList)
+        }
+        if WordListLineKind.detectNumbered(in: currentLine, lineRange) != nil {
+            set.insert(.numberedList)
+        } else {
+            set.remove(.numberedList)
+        }
+        
+        return set
     }
 }
 
 // MARK: - Custom UITextView
 
 final class EditorTextView: UITextView {
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        undoManager?.levelsOfUndo = 50
-    }
- 
-
+    /// Document-only undo, like Word—avoids sharing the window’s undo stack with other controls, which can corrupt undo/redo.
+    private let documentUndoManager: UndoManager = {
+        let m = UndoManager()
+        m.levelsOfUndo = 50
+        m.groupsByEvent = true
+        return m
+    }()
+    override var undoManager: UndoManager? { documentUndoManager }
+    
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(editLink) || action == #selector(removeLink) { return currentLinkRange() != nil }
         return super.canPerformAction(action, withSender: sender)
@@ -697,13 +783,86 @@ final class EditorTextView: UITextView {
     }
 }
 
+// MARK: - Word-style multi-level list (•/◦/▪, 1., a), 1) …)
+
+private enum WordListLineKind {
+    private static let indentU = 4
+    static func listLevel(leading: String) -> Int { leading.count / indentU }
+    static func leadingPrefix(_ line: String) -> String { String(line.prefix(while: { $0 == " " })) }
+    static func detectBullet(in line: String, _ r: NSRange) -> NSRange? {
+        let m = (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression, range: r)
+        return m.location != NSNotFound ? m : nil
+    }
+    static func detectNumbered(in line: String, _ r: NSRange) -> NSRange? {
+        let n = line as NSString
+        if n.range(of: "^\\s*\\d+\\. ", options: .regularExpression, range: r).location != NSNotFound { return r }
+        if n.range(of: "^\\s*[a-z]\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
+        if n.range(of: "^\\s*\\d+\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
+        return nil
+    }
+    static func bulletMark(forLevel l: Int) -> String {
+        if l <= 0 { return "• " }
+        if l == 1 { return "◦ " }
+        return "▪ "
+    }
+    static func nextTopLevelDecimal(before lineIndex: Int, lines: [String]) -> Int {
+        var m = 0
+        for i in 0..<min(lineIndex, lines.count) {
+            var line = lines[i]
+            let sp = String(line.prefix(while: { $0 == " " }))
+            if !sp.isEmpty { continue }
+            line = String(line.dropFirst(sp.count))
+            if let r = line.range(of: "^\\d+\\. ", options: .regularExpression) {
+                if let n = Int(String(line[r].dropLast(2))) { m = max(m, n) }
+            }
+        }
+        return m + 1
+    }
+    static func relevelLineAfterIndent(_ line: String) -> String? {
+        let sp = leadingPrefix(line)
+        let L = listLevel(leading: sp)
+        if L == 0 { return nil }
+        let c = String(line.dropFirst(sp.count))
+        if let r = c.range(of: "^\\d+\\. ", options: .regularExpression) {
+            if L == 1, Int(String(c[r].dropLast(2))) != nil { return sp + "a) " + String(c[r.upperBound...]) }
+            if L >= 2, Int(String(c[r].dropLast(2))) != nil { return sp + "1) " + String(c[r.upperBound...]) }
+        }
+        if L >= 2, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) { return sp + "1) " + String(c[r.upperBound...]) }
+        if L == 1, c.hasPrefix("• ") { return sp + "◦ " + String(c.dropFirst(2)) }
+        if L == 1, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
+        if L >= 2, c.hasPrefix("• ") { return sp + "▪ " + String(c.dropFirst(2)) }
+        if L >= 2, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
+        return nil
+    }
+    static func relevelLineAfterOutdent(_ line: String, allLines: [String], myIndex: Int) -> String? {
+        let sp = leadingPrefix(line)
+        let c = String(line.dropFirst(sp.count))
+        if sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
+            return "\(nextTopLevelDecimal(before: myIndex, lines: allLines)). " + String(c[r.upperBound...]) }
+        if !sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
+            let nsp = String(sp.dropLast(4))
+            let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
+            if nsp.isEmpty { return "\(n). " + String(c[r.upperBound...]) }
+            return nsp + "\(n). " + String(c[r.upperBound...]) }
+        if !sp.isEmpty, let r = c.range(of: "^\\d+\\) ", options: .regularExpression) {
+            let nsp = String(sp.dropLast(4))
+            if nsp.isEmpty {
+                let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
+                return "\(n). " + String(c[r.upperBound...]) }
+            return nsp + "a) " + String(c[r.upperBound...]) }
+        if !sp.isEmpty, c.hasPrefix("◦ ") { return (String(sp.dropLast(4))) + "• " + String(c.dropFirst(2)) }
+        if !sp.isEmpty, c.hasPrefix("▪ ") { return (String(sp.dropLast(4))) + "◦ " + String(c.dropFirst(2)) }
+        return nil
+    }
+}
+
 // MARK: - WYSIWYG Action Handler
 
 class WysiwygActionHandler {
     // Lazy static initialization with error handling
     static let bulletRegex: NSRegularExpression = {
         do {
-            return try NSRegularExpression(pattern: #"^(\s*)• "#)
+            return try NSRegularExpression(pattern: #"^(\s*)[•◦▪] "#)
         } catch {
             fatalError("Invalid regex pattern for bullet: \(error)")
         }
@@ -711,7 +870,9 @@ class WysiwygActionHandler {
     
     static let numberedRegex: NSRegularExpression = {
         do {
-            return try NSRegularExpression(pattern: #"^(\s*)(\d+)\. "#)
+            return try NSRegularExpression(
+                pattern: #"^(\s*)((\d+\.\s+)|([a-z]\)\s+)|(\d+\)\s+))"#
+            )
         } catch {
             fatalError("Invalid regex pattern for numbered list: \(error)")
         }
@@ -720,53 +881,73 @@ class WysiwygActionHandler {
     static func handleReturn(in textView: EditorTextView) -> Bool {
         let lineR = textView.currentLineRange()
         let ns = textView.attributedText.string as NSString
+        let allText = String(ns)
         let line = ns.substring(with: lineR)
-
-        // Check for indented bullets (with leading spaces)
-        let fullRange = NSRange(line.startIndex..., in: line)
-        if let match = WysiwygActionHandler.bulletRegex.firstMatch(in: line, range: fullRange) {
-            let matchRange = match.range
-            if let range = Range(matchRange, in: line) {
-                let indent = String(line[range]).dropLast(2) // Remove "• "
-                let afterBullet = String(line.dropFirst(indent.count + 2))
-                if afterBullet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                    m.replaceCharacters(in: lineR, with: "")
-                    textView.setAttributedStringUndoSafe(m)
-                    textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                    return true
-                } else {
-                    textView.insertText("\n\(indent)• ")
-                    return true
-                }
+        let R = NSRange(line.startIndex..., in: line)
+        let lead = WordListLineKind.leadingPrefix(line)
+        let L = WordListLineKind.listLevel(leading: lead)
+        let cAfter = String(line.dropFirst(lead.count))
+        let lineIndex = (allText as NSString).substring(to: min(lineR.location, (allText as NSString).length))
+            .filter { $0 == "\n" }.count
+        let docLines = (allText as NSString).components(separatedBy: "\n")
+        func clearEmptyListLine() {
+            let m = NSMutableAttributedString(attributedString: textView.attributedText)
+            m.replaceCharacters(in: lineR, with: "")
+            textView.setAttributedStringUndoSafe(m)
+            textView.selectedRange = NSRange(location: lineR.location, length: 0)
+        }
+        if (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression, range: R).location != NSNotFound,
+           let b = cAfter.range(of: "^[•◦▪] ", options: .regularExpression) {
+            let afterB = String(cAfter[b.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if afterB.isEmpty { clearEmptyListLine(); return true }
+            let mark = WordListLineKind.bulletMark(forLevel: L)
+            textView.insertText("\n\(lead)\(mark)"); return true
+        }
+        if (line as NSString).range(of: "^\\s*\\d+\\) ", options: .regularExpression, range: R).location != NSNotFound,
+           let r = cAfter.range(of: "^\\d+\\) ", options: .regularExpression),
+           let d = Int(String(cAfter[r].dropLast(2))) {
+            let after = String(cAfter[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if after.isEmpty { clearEmptyListLine(); return true }
+            textView.insertText("\n\(lead)\(d + 1)) ")
+            return true
+        }
+        if (line as NSString).range(of: "^\\s*[a-z]\\) ", options: .regularExpression, range: R).location != NSNotFound,
+           let r = cAfter.range(of: "^[a-z]\\) ", options: .regularExpression) {
+            let ch = cAfter[r.lowerBound]
+            let after = String(cAfter[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if after.isEmpty { clearEmptyListLine(); return true }
+            if L == 0 {
+                let n = WordListLineKind.nextTopLevelDecimal(before: lineIndex, lines: docLines)
+                textView.insertText("\n\(n). ")
+                return true
+            }
+            let nch: Character
+            if ch < "z" {
+                nch = Character(UnicodeScalar(UInt32(ch.asciiValue! + 1))!)
+            } else {
+                nch = "a"
+            }
+            textView.insertText("\n\(lead)\(String(nch))" + ") ")
+            return true
+        }
+        if (line as NSString).range(of: "^\\s*\\d+\\. ", options: .regularExpression, range: R).location != NSNotFound,
+           let r0 = cAfter.range(of: "^\\d+\\. ", options: .regularExpression) {
+            let dStr = String(cAfter[r0].dropLast(2))
+            let after = String(cAfter[r0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if L == 0, let n = Int(dStr) {
+                if after.isEmpty { clearEmptyListLine(); return true }
+                textView.insertText("\n\(lead)\(n + 1). ")
+                return true
+            }
+            if L > 0, after.isEmpty { clearEmptyListLine(); return true }
+            if L > 0, let n0 = Int(dStr) {
+                let u = (n0 - 1) % 26
+                let nextCode = 97 + (u + 1) % 26
+                let nextCh = Character(UnicodeScalar(nextCode)!)
+                textView.insertText("\n\(lead)\(nextCh)) ")
+                return true
             }
         }
-
-        // Numbered list
-        if let match = WysiwygActionHandler.numberedRegex.firstMatch(in: line, range: fullRange) {
-            let nsLine = line as NSString
-            let matchRange = match.range
-            let prefix = nsLine.substring(with: matchRange)
-            
-            // Extract indent and number
-            if let numMatch = prefix.range(of: #"\d+"#, options: .regularExpression) {
-                let numStr = String(prefix[numMatch])
-                let indent = String(prefix.prefix(while: { $0 == " " }))
-                let after = String(line.dropFirst(prefix.count))
-                
-                if after.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                    m.replaceCharacters(in: lineR, with: "")
-                    textView.setAttributedStringUndoSafe(m)
-                    textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                    return true
-                } else if let n = Int(numStr) {
-                    textView.insertText("\n\(indent)\(n + 1). ")
-                    return true
-                }
-            }
-        }
-
         return false
     }
     
@@ -797,57 +978,275 @@ class WysiwygActionHandler {
         if hasSelection {
             let m = NSMutableAttributedString(attributedString: textView.attributedText)
             switch action {
-            case .bold: toggleFontTrait(.traitBold, in: m, range: range)
-            case .italic: toggleFontTrait(.traitItalic, in: m, range: range)
-            case .underline: toggleSimple(.underlineStyle, value: NSUnderlineStyle.single.rawValue, in: m, range: range)
-            case .strikethrough: toggleSimple(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, in: m, range: range)
+            case .bold: toggleFontTraitWordStyle(.traitBold, in: m, range: range)
+            case .italic: toggleFontTraitWordStyle(.traitItalic, in: m, range: range)
+            case .underline: toggleKeyWordStyle(.underlineStyle, value: NSUnderlineStyle.single.rawValue, in: m, range: range, isSet: { ($0 as? Int) == NSUnderlineStyle.single.rawValue })
+            case .strikethrough: toggleKeyWordStyle(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, in: m, range: range, isSet: { ($0 as? Int) == NSUnderlineStyle.single.rawValue })
             case .removeFormat: removeAllFormatting(in: m, range: range)
-            case .alignLeft: setTextAlignment(.left, in: m, range: range)
-            case .alignCenter: setTextAlignment(.center, in: m, range: range)
-            case .alignRight: setTextAlignment(.right, in: m, range: range)
+            case .alignLeft, .alignCenter, .alignRight:
+                let a: NSTextAlignment = (action == .alignLeft) ? .left : (action == .alignCenter ? .center : .right)
+                setTextAlignmentForAllLinesCovered(m: m, fullSelectedRange: range, alignment: a)
             default: break
             }
             textView.setAttributedStringUndoSafe(m)
             textView.selectedRange = range
-            coord.applyTypingAttributes(in: textView)
+            
+            // Ensure "next typed" attributes and toolbar state reflect the caret context
+            // rather than stale typingModes after selection-only formatting.
+            let caretLocation = range.location + range.length
+            let idx = max(0, min(max(0, caretLocation - 1), max(0, m.length - 1)))
+            let caretAttrs = m.length > 0 ? m.attributes(at: idx, effectiveRange: nil) : textView.typingAttributes
+            coord.setTypingModesFromAttributes(caretAttrs, in: textView)
         } else {
             // Typing mode
             switch action {
             case .bold, .italic, .underline, .strikethrough:
                 let shouldEnable = !coord.typingModes.contains(action)
                 coord.setTypingMode(action, enabled: shouldEnable, in: textView)
-            case .alignLeft: setCaretAlignment(.left, in: textView)
-            case .alignCenter: setCaretAlignment(.center, in: textView)
-            case .alignRight: setCaretAlignment(.right, in: textView)
+            case .alignLeft: applyAlignmentToCurrentLine(.left, tv: textView)
+            case .alignCenter: applyAlignmentToCurrentLine(.center, tv: textView)
+            case .alignRight: applyAlignmentToCurrentLine(.right, tv: textView)
             default: break
             }
         }
     }
-
-    // MARK: Headers
-
-    private static func applyHeader(_ action: MarkdownAction, tv: UITextView) {
-        let sizes: (CGFloat, UIFont.Weight) = {
-            switch action {
-            case .header1: return (28, .bold)
-            case .header2: return (22, .semibold)
-            case .header3: return (18, .semibold)
-            default: return (EditorTheme.baseFont.pointSize, .regular)
-            }
-        }()
-        
+    
+    /// Word-style: alignment applies to the current paragraph, not just future typing.
+    private static func applyAlignmentToCurrentLine(_ alignment: NSTextAlignment, tv: UITextView) {
         let lineR = (tv as? EditorTextView)?.currentLineRange() ?? tv.selectedRange
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        if m.length > 0, lineR.location < m.length {
+            setTextAlignment(alignment, in: m, range: lineR)
+        }
+        setCaretAlignment(alignment, in: tv)
+        tv.setAttributedStringUndoSafe(m)
+    }
+    
+    // MARK: - Multiline selection (Word: apply to every selected line)
+    
+    /// `NSString` line ranges from the first line the selection touches through the last (inclusive).
+    private static func lineRangesCoveredBySelection(_ full: NSString, _ sel: NSRange) -> [NSRange] {
+        guard full.length > 0 else { return [] }
+        if sel.length == 0 {
+            let pos = min(max(0, sel.location), full.length - 1)
+            return [full.lineRange(for: NSRange(location: pos, length: 0))]
+        }
+        let endChar = min(NSMaxRange(sel) - 1, full.length - 1)
+        let a = min(max(0, sel.location), endChar)
+        let firstL = full.lineRange(for: NSRange(location: a, length: 0))
+        let lastL = full.lineRange(for: NSRange(location: endChar, length: 0))
+        let endBound = NSMaxRange(lastL)
+        var r: [NSRange] = []
+        var c = firstL.location
+        var safety = 0
+        while c < endBound, safety < 20_000 {
+            safety += 1
+            let lr = full.lineRange(for: NSRange(location: c, length: 0))
+            r.append(lr)
+            let n = NSMaxRange(lr)
+            if n <= c { break }
+            c = n
+        }
+        return r
+    }
+    
+    private static func blockRangeForLineRanges(_ lrs: [NSRange]) -> NSRange? {
+        guard let f = lrs.first, let l = lrs.last else { return nil }
+        return NSRange(location: f.location, length: NSMaxRange(l) - f.location)
+    }
+    
+    private static func stringLinesFromBlock(_ full: NSString, _ lrs: [NSRange]) -> [String] {
+        lrs.map { r in
+            var s = full.substring(with: r) as String
+            if s.hasSuffix("\n") { s = String(s.dropLast()) }
+            return s
+        }
+    }
+    
+    private static func transformListLine(_ line: String, action: MarkdownAction) -> String {
+        let n = line as NSString
+        let r = line.startIndex..<line.endIndex
+        let rNS = NSRange(r, in: line)
+        let hasNumber = n.range(of: "^\\s*\\d+\\. ", options: .regularExpression, range: rNS).location != NSNotFound
+            || n.range(of: "^\\s*\\d+\\) ", options: .regularExpression, range: rNS).location != NSNotFound
+            || n.range(of: "^\\s*[a-z]\\) ", options: .regularExpression, range: rNS).location != NSNotFound
+        let hasBullet = n.range(of: "^\\s*[•◦▪] ", options: .regularExpression, range: rNS).location != NSNotFound
+        switch action {
+        case .bulletList:
+            if hasNumber { return convertNumberedLineToBulletLine(line) }
+            if hasBullet { return removeListMarkerForToggle(line, bullet: true) }
+            return addListMarkerToPlainLine(line, numbered: false)
+        case .numberedList:
+            if hasNumber { return removeListMarkerForToggle(line, bullet: false) }
+            if hasBullet { return convertBulletLineToNumberedLine(line) }
+            return addListMarkerToPlainLine(line, numbered: true)
+        default: return line
+        }
+    }
+    
+    private static func indentOrOutdentLineString(
+        _ line: String, outdent: Bool, allDocumentLines: [String], lineIndex: Int
+    ) -> String {
+        if outdent {
+            let lead = line.prefix(while: { $0 == " " })
+            let remove = min(4, lead.count)
+            if remove == 0 { return line }
+            let t = String(line.dropFirst(remove))
+            return WordListLineKind.relevelLineAfterOutdent(t, allLines: allDocumentLines, myIndex: lineIndex) ?? t
+        }
+        let t = String(repeating: " ", count: 4) + line
+        return WordListLineKind.relevelLineAfterIndent(t) ?? t
+    }
+    
+    private static func setTextAlignmentForAllLinesCovered(
+        m: NSMutableAttributedString, fullSelectedRange: NSRange, alignment: NSTextAlignment
+    ) {
+        let ns = m.string as NSString
+        let lrs = lineRangesCoveredBySelection(ns, fullSelectedRange)
+        var seen = Set<String>()
+        for lr in lrs {
+            let loc = min(lr.location, max(0, m.length - 1))
+            let pr = ns.paragraphRange(for: NSRange(location: loc, length: 0))
+            let key = "\(pr.location)|\(pr.length)"
+            if seen.insert(key).inserted {
+                setTextAlignment(alignment, in: m, range: pr)
+            }
+        }
+    }
+
+    // MARK: Headers (Word-style: same heading again reverts the line to body text)
+    
+    private static func headerSpec(_ action: MarkdownAction) -> (size: CGFloat, weight: UIFont.Weight) {
+        switch action {
+        case .header1: return (28, .bold)
+        case .header2: return (22, .semibold)
+        case .header3: return (18, .semibold)
+        default: return (EditorTheme.baseFont.pointSize, .regular)
+        }
+    }
+    
+    private static let headerLineSpacing: CGFloat = 6
+    private static let headerParagraphBefore: CGFloat = 8
+    private static let headerParagraphAfter: CGFloat = 8
+    
+    /// True when this line is already that heading: font size + heading-style paragraph (avoids 18pt body / H3 false positives).
+    private static func isSameHeadingLine(
+        m: NSAttributedString,
+        lineR: NSRange,
+        as action: MarkdownAction
+    ) -> Bool {
+        guard lineR.length > 0, lineR.location + lineR.length <= m.length else { return false }
+        let s = headerSpec(action)
+        guard let font = m.attribute(.font, at: lineR.location, effectiveRange: nil) as? UIFont,
+              abs(font.pointSize - s.size) < 0.85
+        else { return false }
+        guard let p = m.attribute(.paragraphStyle, at: lineR.location, effectiveRange: nil) as? NSParagraphStyle,
+              p.paragraphSpacingBefore >= 2, p.lineSpacing > 0
+        else { return false }
+        return true
+    }
+    
+    private static func bodyParagraphStyle(preservingAlignment align: NSTextAlignment = .natural) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 0
+        style.paragraphSpacingBefore = 0
+        style.paragraphSpacing = 0
+        style.alignment = align
+        return style
+    }
+
+    // MARK: Headers (implementation)
+
+    private static func applyHeader(_ action: MarkdownAction, tv: UITextView) {
+        let spec = headerSpec(action)
+        let sel = tv.selectedRange
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let full = m.string as NSString
+        let lrs = lineRangesCoveredBySelection(full, sel)
+        guard !lrs.isEmpty else { return }
+        var lineR = lrs[0]
+        
+        // Many lines: revert to body only if every non-empty line is already this heading; otherwise make each line that heading.
+        if lrs.count > 1, m.length > 0 {
+            let checkLines = lrs.filter { $0.length > 0 && $0.location < m.length }
+            let turnToBody = !checkLines.isEmpty && checkLines.allSatisfy { isSameHeadingLine(m: m, lineR: $0, as: action) }
+            for lr in lrs {
+                if lr.length == 0, lr.location >= m.length { continue }
+                if lr.length == 0 { continue }
+                if turnToBody {
+                    var align: NSTextAlignment = .natural
+                    if m.length > 0, lr.location < m.length,
+                       let p = m.attribute(.paragraphStyle, at: lr.location, effectiveRange: nil) as? NSParagraphStyle {
+                        align = p.alignment
+                    }
+                    m.addAttributes([
+                        .font: EditorTheme.baseFont,
+                        .foregroundColor: EditorTheme.textColor,
+                        .paragraphStyle: bodyParagraphStyle(preservingAlignment: align)
+                    ], range: lr)
+                } else {
+                    let at = min(lr.location, max(0, m.length - 1))
+                    let existingAttrs = m.attributes(at: at, effectiveRange: nil)
+                    var merged = existingAttrs
+                    merged[.font] = UIFont.systemFont(ofSize: spec.size, weight: spec.weight)
+                    merged[.foregroundColor] = (existingAttrs[.foregroundColor] as? UIColor) ?? EditorTheme.textColor
+                    let existingStyle = existingAttrs[.paragraphStyle] as? NSParagraphStyle
+                    let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                    style.lineSpacing = headerLineSpacing
+                    style.paragraphSpacingBefore = headerParagraphBefore
+                    style.paragraphSpacing = headerParagraphAfter
+                    merged[.paragraphStyle] = style
+                    m.addAttributes(merged, range: lr)
+                }
+            }
+            var ta = tv.typingAttributes
+            if turnToBody {
+                ta[.font] = EditorTheme.baseFont
+                ta[.paragraphStyle] = bodyParagraphStyle(preservingAlignment: (ta[.paragraphStyle] as? NSParagraphStyle)?.alignment ?? .natural)
+            } else {
+                ta[.font] = UIFont.systemFont(ofSize: spec.size, weight: spec.weight)
+            }
+            tv.typingAttributes = ta
+            tv.setAttributedStringUndoSafe(m)
+            if let br = blockRangeForLineRanges(lrs), br.location + br.length <= m.length {
+                tv.selectedRange = NSRange(location: br.location, length: br.length)
+            } else {
+                tv.selectedRange = NSRange(location: sel.location, length: sel.length)
+            }
+            return
+        }
+        
+        lineR = lrs[0]
+        
+        // Word: the same style control again reverts the line to Normal (body).
+        if m.length > 0, lineR.length > 0, lineR.location < m.length, isSameHeadingLine(m: m, lineR: lineR, as: action) {
+            var align: NSTextAlignment = .natural
+            if let p = m.attribute(.paragraphStyle, at: lineR.location, effectiveRange: nil) as? NSParagraphStyle {
+                align = p.alignment
+            }
+            m.addAttributes([
+                .font: EditorTheme.baseFont,
+                .foregroundColor: EditorTheme.textColor,
+                .paragraphStyle: bodyParagraphStyle(preservingAlignment: align)
+            ], range: lineR)
+            var ta = tv.typingAttributes
+            ta[.font] = EditorTheme.baseFont
+            ta[.paragraphStyle] = bodyParagraphStyle(preservingAlignment: align)
+            tv.typingAttributes = ta
+            tv.setAttributedStringUndoSafe(m)
+            tv.selectedRange = NSRange(location: lineR.location, length: 0)
+            return
+        }
         
         // Handle empty text or invalid range
-        guard m.length > 0, lineR.location < m.length else {
+        guard m.length > 0, lineR.length > 0, lineR.location < m.length else {
             // For empty text, just set typing attributes for the header
             var attrs = tv.typingAttributes
-            attrs[.font] = UIFont.systemFont(ofSize: sizes.0, weight: sizes.1)
+            attrs[.font] = UIFont.systemFont(ofSize: spec.size, weight: spec.weight)
             let style = NSMutableParagraphStyle()
-            style.lineSpacing = 6
-            style.paragraphSpacingBefore = 8
-            style.paragraphSpacing = 8
+            style.lineSpacing = headerLineSpacing
+            style.paragraphSpacingBefore = headerParagraphBefore
+            style.paragraphSpacing = headerParagraphAfter
             attrs[.paragraphStyle] = style
             tv.typingAttributes = attrs
             return
@@ -855,108 +1254,198 @@ class WysiwygActionHandler {
         
         let existingAttrs = m.attributes(at: lineR.location, effectiveRange: nil)
         var merged = existingAttrs
-        merged[.font] = UIFont.systemFont(ofSize: sizes.0, weight: sizes.1)
+        merged[.font] = UIFont.systemFont(ofSize: spec.size, weight: spec.weight)
+        merged[.foregroundColor] = (existingAttrs[.foregroundColor] as? UIColor) ?? EditorTheme.textColor
         
-        // Preserve existing paragraph style properties and just update spacing
         let existingStyle = existingAttrs[.paragraphStyle] as? NSParagraphStyle
         let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        style.lineSpacing = 6
-        style.paragraphSpacingBefore = 8
-        style.paragraphSpacing = 8
+        style.lineSpacing = headerLineSpacing
+        style.paragraphSpacingBefore = headerParagraphBefore
+        style.paragraphSpacing = headerParagraphAfter
         merged[.paragraphStyle] = style
         m.addAttributes(merged, range: lineR)
         
         tv.setAttributedStringUndoSafe(m)
-        tv.selectedRange = NSRange(location: lineR.location, length: 0)
+        if sel.length > 0, let br = blockRangeForLineRanges(lrs), br.location + br.length <= m.length {
+            tv.selectedRange = NSRange(location: br.location, length: br.length)
+        } else {
+            tv.selectedRange = NSRange(location: lineR.location, length: 0)
+        }
     }
 
-    // MARK: Lists with proper indentation
+    // MARK: Lists (Word-style: same control swaps list type or toggles; never stack markers)
+    
+    /// End offset in the line of leading spaces + list marker (• or N. ), in UTF-16. Nil if the line is not a list line.
+    private static func listMarkerPrefixUTF16Length(_ line: String) -> Int? {
+        let n = line as NSString
+        let paren = n.range(of: "^\\s*\\d+\\) ", options: .regularExpression)
+        if paren.location != NSNotFound { return paren.length }
+        let letter = n.range(of: "^\\s*[a-z]\\) ", options: .regularExpression)
+        if letter.location != NSNotFound { return letter.length }
+        let numbered = n.range(of: "^\\s*\\d+\\. ", options: .regularExpression)
+        if numbered.location != NSNotFound { return numbered.length }
+        let bullet = n.range(of: "^\\s*[•◦▪] ", options: .regularExpression)
+        if bullet.location != NSNotFound { return bullet.length }
+        return nil
+    }
+    
+    private static func leadingSpacePrefix(_ line: String) -> String {
+        String(line.prefix(while: { $0 == " " }))
+    }
+    
+    private static func removeListMarkerForToggle(_ line: String, bullet: Bool) -> String {
+        let n = line as NSString
+        if bullet {
+            for p in ["^\\s*• ", "^\\s*◦ ", "^\\s*▪ "] {
+                let r = n.range(of: p, options: .regularExpression)
+                if r.location != NSNotFound { return n.replacingCharacters(in: r, with: "") }
+            }
+            return line
+        } else {
+            for p in ["^\\s*\\d+\\. ", "^\\s*\\d+\\) ", "^\\s*[a-z]\\) "] {
+                let r = n.range(of: p, options: .regularExpression)
+                if r.location != NSNotFound { return n.replacingCharacters(in: r, with: "") }
+            }
+            return line
+        }
+    }
+    
+    /// Plain line or paragraph → "• a" / "1. a" (leading spaces = indent; does not double-insert a second indent).
+    private static func addListMarkerToPlainLine(_ line: String, numbered: Bool) -> String {
+        let indent = leadingSpacePrefix(line)
+        let indLen = indent.count
+        let rest = indLen > 0 ? String(line.dropFirst(indLen)) : line
+        let marker = numbered ? "1. " : "• "
+        if rest.isEmpty { return indent + marker }
+        return indent + marker + rest
+    }
+    
+    private static func convertNumberedLineToBulletLine(_ line: String) -> String {
+        let indent = leadingSpacePrefix(line)
+        let indLen = indent.count
+        let after = indLen > 0 ? String(line.dropFirst(indLen)) : line
+        let a = after as NSString
+        for p in ["^\\d+\\. ", "^\\d+\\) ", "^[a-z]\\) "] {
+            let m = a.range(of: p, options: .regularExpression)
+            if m.location != NSNotFound { return indent + "• " + a.substring(from: m.location + m.length) }
+        }
+        return line
+    }
+    
+    private static func convertBulletLineToNumberedLine(_ line: String) -> String {
+        let indent = leadingSpacePrefix(line)
+        let indLen = indent.count
+        let rest = indLen > 0 ? String(line.dropFirst(indLen)) : line
+        if let b = rest.range(of: "^[•◦▪] ", options: .regularExpression) {
+            return indent + "1. " + String(rest[b.upperBound...])
+        }
+        return line
+    }
+    
+    private static func newCursorInLineAfterListEdit(
+        oldLine: String,
+        newLine: String,
+        cursorInLine: Int,
+        pOld: Int,
+        pNew: Int
+    ) -> Int {
+        let oLen = (oldLine as NSString).length
+        let nLen = (newLine as NSString).length
+        if cursorInLine <= pOld {
+            return pNew
+        }
+        return cursorInLine + (nLen - oLen)
+    }
 
     private static func applyListAction(_ action: MarkdownAction, tv: UITextView) {
         let range = tv.selectedRange
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
-        let ns = m.string as NSString
-        let lineRange = ns.lineRange(for: range)
-        let line = ns.substring(with: lineRange)
+        let full = m.string as NSString
+        let lrs = lineRangesCoveredBySelection(full, range)
+        guard !lrs.isEmpty else { return }
         
-        // Get current indent level
-        let currentIndent = line.prefix(while: { $0 == " " })
-        
-        // Track cursor adjustment
-        var newCursorLocation = range.location
-        
-        switch action {
-        case .bulletList:
-            if line.range(of: #"^\s*• "#, options: .regularExpression) != nil {
-                // Remove bullet
-                if let bulletRange = line.range(of: #"^\s*• "#, options: .regularExpression) {
-                    let nsRange = NSRange(bulletRange, in: line)
-                    m.replaceCharacters(in: NSRange(location: lineRange.location + nsRange.location, 
-                                                   length: nsRange.length), with: "")
-                    // Adjust cursor - move back by the removed prefix length
-                    newCursorLocation = max(lineRange.location, range.location - nsRange.length)
-                }
-            } else {
-                // Add bullet with current indent
-                let prefix = "\(currentIndent)• "
-                m.insert(NSAttributedString(string: prefix), at: lineRange.location)
-                // Position cursor after the bullet point
-                newCursorLocation = lineRange.location + prefix.count
-            }
-            
-        case .numberedList:
-            if line.range(of: #"^\s*\d+\. "#, options: .regularExpression) != nil {
-                // Remove number
-                if let numRange = line.range(of: #"^\s*\d+\. "#, options: .regularExpression) {
-                    let nsRange = NSRange(numRange, in: line)
-                    m.replaceCharacters(in: NSRange(location: lineRange.location + nsRange.location,
-                                                   length: nsRange.length), with: "")
-                    // Adjust cursor - move back by the removed prefix length
-                    newCursorLocation = max(lineRange.location, range.location - nsRange.length)
-                }
-            } else {
-                // Add number with current indent
-                let prefix = "\(currentIndent)1. "
-                m.insert(NSAttributedString(string: prefix), at: lineRange.location)
-                // Position cursor after the number
-                newCursorLocation = lineRange.location + prefix.count
-            }
-            
-        default: break
+        if lrs.count > 1, let br = blockRangeForLineRanges(lrs) {
+            let oldBlock = full.substring(with: br) as String
+            let raw = stringLinesFromBlock(full, lrs)
+            let newLines = raw.map { transformListLine($0, action: action) }
+            let newBlock = newLines.joined(separator: "\n")
+            guard newBlock != oldBlock else { return }
+            m.replaceCharacters(in: br, with: newBlock)
+            tv.setAttributedStringUndoSafe(m)
+            let newLen = (newBlock as NSString).length
+            tv.selectedRange = NSRange(location: br.location, length: newLen)
+            return
         }
         
+        let lineRange = lrs[0]
+        let raw = full.substring(with: lineRange) as String
+        let hadTrailingNewline = raw.hasSuffix("\n")
+        let line = hadTrailingNewline ? String(raw.dropLast()) : raw
+        var cursorInLine = max(0, range.location - lineRange.location)
+        cursorInLine = min(cursorInLine, (line as NSString).length)
+        if hadTrailingNewline, range.location >= lineRange.location + (line as NSString).length {
+            cursorInLine = (line as NSString).length
+        }
+        let newCore = transformListLine(line, action: action)
+        guard newCore != line else { return }
+        let newStored = newCore + (hadTrailingNewline ? "\n" : "")
+        let pOld = listMarkerPrefixUTF16Length(line) ?? 0
+        let pNew = listMarkerPrefixUTF16Length(newCore) ?? 0
+        m.replaceCharacters(in: lineRange, with: newStored)
+        let newCursorInLine = newCursorInLineAfterListEdit(
+            oldLine: line, newLine: newCore, cursorInLine: cursorInLine, pOld: pOld, pNew: pNew
+        )
+        let nCore = (newCore as NSString).length
+        let clamped = min(max(0, newCursorInLine), nCore)
         tv.setAttributedStringUndoSafe(m)
-        tv.selectedRange = NSRange(location: newCursorLocation, length: 0)
+        let off = min(clamped, (newStored as NSString).length)
+        tv.selectedRange = NSRange(location: min(lineRange.location + off, m.length), length: 0)
     }
 
-    // MARK: Indent/Outdent with sub-bullets
+    // MARK: Indent/Outdent (Word-style: work on any line, not only lists; 4 spaces = one level)
 
     private static func applyIndentAction(_ action: MarkdownAction, tv: UITextView) {
         let range = tv.selectedRange
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
-        let ns = m.string as NSString
-        let lineRange = ns.lineRange(for: range)
-        let line = ns.substring(with: lineRange)
+        let full = m.string as NSString
+        let lrs = lineRangesCoveredBySelection(full, range)
+        guard !lrs.isEmpty else { return }
+        let outdent = (action == .outdent)
+        let str = m.string
+        let docLines = (str as NSString).components(separatedBy: "\n")
         
-        let indentUnit = "    " // 4 spaces for sub-level
-        
-        if action == .indent {
-            // Add indent
-            if line.range(of: #"^\s*[•\d]"#, options: .regularExpression) != nil {
-                // It's a list item, add indent at the start
-                m.insert(NSAttributedString(string: indentUnit), at: lineRange.location)
-                tv.setAttributedStringUndoSafe(m)
-                tv.selectedRange = NSRange(location: range.location + indentUnit.count, length: 0)
+        if lrs.count > 1, let br = blockRangeForLineRanges(lrs) {
+            let raw = stringLinesFromBlock(full, lrs)
+            let startIdx = (str as NSString).substring(to: br.location).filter { $0 == "\n" }.count
+            let newLines = raw.enumerated().map { (i, line) in
+                indentOrOutdentLineString(
+                    line, outdent: outdent, allDocumentLines: docLines, lineIndex: startIdx + i
+                )
             }
-        } else if action == .outdent {
-            // Remove indent
-            let leadingSpaces = line.prefix(while: { $0 == " " })
-            if leadingSpaces.count >= indentUnit.count {
-                m.replaceCharacters(in: NSRange(location: lineRange.location, length: indentUnit.count), with: "")
-                tv.setAttributedStringUndoSafe(m)
-                tv.selectedRange = NSRange(location: max(0, range.location - indentUnit.count), length: 0)
-            }
+            let newBlock = newLines.joined(separator: "\n")
+            if newBlock == full.substring(with: br) { return }
+            m.replaceCharacters(in: br, with: newBlock)
+            tv.setAttributedStringUndoSafe(m)
+            tv.selectedRange = NSRange(location: br.location, length: (newBlock as NSString).length)
+            return
         }
+        
+        let lineRange = lrs[0]
+        let raw0 = full.substring(with: lineRange) as String
+        let hadTrailing = raw0.hasSuffix("\n")
+        let line = hadTrailing ? String(raw0.dropLast()) : raw0
+        let lineIdx = (str as NSString).substring(to: min(lineRange.location, full.length)).filter { $0 == "\n" }.count
+        let newLine = indentOrOutdentLineString(
+            line, outdent: outdent, allDocumentLines: docLines, lineIndex: lineIdx
+        )
+        if newLine == line { return }
+        let newStored = newLine + (hadTrailing ? "\n" : "")
+        m.replaceCharacters(in: lineRange, with: newStored)
+        let delta = (newLine as NSString).length - (line as NSString).length
+        tv.setAttributedStringUndoSafe(m)
+        tv.selectedRange = NSRange(
+            location: min(max(0, range.location + delta), m.length), length: 0
+        )
     }
 
     // MARK: Alignment
@@ -990,18 +1479,34 @@ class WysiwygActionHandler {
         tv.typingAttributes = attrs
     }
 
-    // MARK: Font traits
+    // MARK: Font traits (Word: whole selection is bold or not; not per-run flips on mixed)
 
-    private static func toggleFontTrait(_ trait: UIFontDescriptor.SymbolicTraits, 
-                                       in m: NSMutableAttributedString, 
-                                       range: NSRange) {
-        m.enumerateAttribute(.font, in: range, options: []) { value, r, _ in
-            let base = (value as? UIFont) ?? EditorTheme.baseFont
-            var traits = base.fontDescriptor.symbolicTraits
-            if traits.contains(trait) { traits.remove(trait) } else { traits.insert(trait) }
-            
+    private static func allRunsInRangeHaveFontTrait(
+        _ m: NSAttributedString, range: NSRange, trait: UIFontDescriptor.SymbolicTraits
+    ) -> Bool {
+        var all = true
+        var saw = false
+        m.enumerateAttribute(.font, in: range, options: []) { f, r, _ in
+            if r.length == 0 { return }
+            saw = true
+            let uif = (f as? UIFont) ?? EditorTheme.baseFont
+            if !uif.fontDescriptor.symbolicTraits.contains(trait) { all = false }
+        }
+        return saw && all
+    }
+
+    private static func toggleFontTraitWordStyle(
+        _ trait: UIFontDescriptor.SymbolicTraits, in m: NSMutableAttributedString, range: NSRange
+    ) {
+        let allHave = allRunsInRangeHaveFontTrait(m, range: range, trait: trait)
+        let enable = !allHave
+        m.enumerateAttribute(.font, in: range, options: []) { f, r, _ in
+            if r.length == 0 { return }
+            let base = (f as? UIFont) ?? EditorTheme.baseFont
+            var t = base.fontDescriptor.symbolicTraits
+            if enable { t.insert(trait) } else { t.remove(trait) }
             let newFont: UIFont
-            if let descriptor = base.fontDescriptor.withSymbolicTraits(traits) {
+            if let descriptor = base.fontDescriptor.withSymbolicTraits(t) {
                 newFont = UIFont(descriptor: descriptor, size: base.pointSize)
             } else {
                 newFont = base
@@ -1010,11 +1515,19 @@ class WysiwygActionHandler {
         }
     }
 
-    private static func toggleSimple(_ key: NSAttributedString.Key, value: Any, in m: NSMutableAttributedString, range: NSRange) {
+    private static func toggleKeyWordStyle(
+        _ key: NSAttributedString.Key,
+        value: Int,
+        in m: NSMutableAttributedString,
+        range: NSRange,
+        isSet: (Any?) -> Bool
+    ) {
+        var all = true
         m.enumerateAttribute(key, in: range, options: []) { existing, r, _ in
-            if existing != nil { m.removeAttribute(key, range: r) }
-            else { m.addAttribute(key, value: value, range: r) }
+            if r.length == 0 { return }
+            if !isSet(existing) { all = false }
         }
+        if all { m.removeAttribute(key, range: range) } else { m.addAttribute(key, value: value, range: range) }
     }
 
 
@@ -1043,7 +1556,9 @@ struct MarkdownToolbarView: View {
                     toolbarButton("S", .strikethrough, hint: "Strikethrough")
                 }
                 
-                Divider().frame(height: 24)
+                Rectangle()
+                    .fill(DesignSystem.Colors.border)
+                    .frame(width: 1, height: 24)
                 
                 // Headers menu
                 Menu {
@@ -1054,11 +1569,14 @@ struct MarkdownToolbarView: View {
                     Text("H")
                         .font(.system(size: 16, weight: .semibold))
                         .frame(width: 32, height: 32)
-                        .background(Color(.systemGray5))
-                        .cornerRadius(6)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .background(DesignSystem.Colors.backgroundTertiary)
+                        .cornerRadius(DesignSystem.CornerRadius.sm)
                 }
                 
-                Divider().frame(height: 24)
+                Rectangle()
+                    .fill(DesignSystem.Colors.border)
+                    .frame(width: 1, height: 24)
                 
                 // Lists
                 HStack(spacing: 6) {
@@ -1068,7 +1586,9 @@ struct MarkdownToolbarView: View {
                     toolbarButton("←", .outdent, hint: "Outdent")
                 }
                 
-                Divider().frame(height: 24)
+                Rectangle()
+                    .fill(DesignSystem.Colors.border)
+                    .frame(width: 1, height: 24)
                 
                 // Alignment menu
                 Menu {
@@ -1083,12 +1603,16 @@ struct MarkdownToolbarView: View {
                     }
                 } label: {
                     Image(systemName: "text.alignleft")
+                        .font(.system(size: 15, weight: .medium))
                         .frame(width: 32, height: 32)
-                        .background(Color(.systemGray5))
-                        .cornerRadius(6)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .background(DesignSystem.Colors.backgroundTertiary)
+                        .cornerRadius(DesignSystem.CornerRadius.sm)
                 }
                 
-                Divider().frame(height: 24)
+                Rectangle()
+                    .fill(DesignSystem.Colors.border)
+                    .frame(width: 1, height: 24)
                 
                 // Insert menu
                 Menu {
@@ -1097,12 +1621,16 @@ struct MarkdownToolbarView: View {
                     }
                 } label: {
                     Image(systemName: "plus.circle")
+                        .font(.system(size: 15, weight: .medium))
                         .frame(width: 32, height: 32)
-                        .background(Color(.systemGray5))
-                        .cornerRadius(6)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .background(DesignSystem.Colors.backgroundTertiary)
+                        .cornerRadius(DesignSystem.CornerRadius.sm)
                 }
                 
-                Divider().frame(height: 24)
+                Rectangle()
+                    .fill(DesignSystem.Colors.border)
+                    .frame(width: 1, height: 24)
                 
                 // Tools
                 HStack(spacing: 6) {
@@ -1114,6 +1642,7 @@ struct MarkdownToolbarView: View {
             .padding(.vertical, 4)
         }
         .frame(height: 44)
+        .background(DesignSystem.Colors.surface)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Formatting toolbar")
         .accessibilityHint("Use to format text with bold, italic, lists, and more")
@@ -1136,11 +1665,11 @@ struct ToolbarButton: View {
             coordinator?.handleMarkdownAction(action)  
         } label: {
             Text(title)
-        .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .frame(width: 32, height: 32)
-                .foregroundColor(isSelected ? .white : .primary)
-                .background(isSelected ? Color.blue : Color(.systemGray5))
-        .cornerRadius(6)
+                .foregroundColor(isSelected ? DesignSystem.Colors.textInverse : DesignSystem.Colors.textPrimary)
+                .background(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.backgroundTertiary)
+                .cornerRadius(DesignSystem.CornerRadius.sm)
         }
         .accessibilityLabel(accessibilityHint ?? title)
         .accessibilityAddTraits(.isButton)

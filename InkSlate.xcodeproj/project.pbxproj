@@ -27,6 +27,7 @@
 		2F1AC03B2E8EE8CC00115C4A /* InkSlate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = InkSlate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2F1AC04C2E8EE8CE00115C4A /* InkSlateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InkSlateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2F1AC0562E8EE8CE00115C4A /* InkSlateUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InkSlateUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2F9B00012F9B000100011111 /* InkSlateShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = InkSlateShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -36,6 +37,13 @@
 				Info.plist,
 			);
 			target = 2F1AC03A2E8EE8CC00115C4A /* InkSlate */;
+		};
+		2F9B00022F9B000200011111 /* Exceptions for "InkSlateShareExtension" folder in "InkSlateShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 2F9B00032F9B000300011111 /* InkSlateShareExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -56,6 +64,14 @@
 		2F1AC0592E8EE8CE00115C4A /* InkSlateUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = InkSlateUITests;
+			sourceTree = "<group>";
+		};
+		2F9B00042F9B000400011111 /* InkSlateShareExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				2F9B00022F9B000200011111 /* Exceptions for "InkSlateShareExtension" folder in "InkSlateShareExtension" target */,
+			);
+			path = InkSlateShareExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -82,6 +98,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2F9B00062F9B000600011111 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -92,6 +115,7 @@
 				2F1AC04F2E8EE8CE00115C4A /* InkSlateTests */,
 				2F1AC0592E8EE8CE00115C4A /* InkSlateUITests */,
 				2F1AC03C2E8EE8CC00115C4A /* Products */,
+				2F1F050C2F9AA8C900510912 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -101,8 +125,17 @@
 				2F1AC03B2E8EE8CC00115C4A /* InkSlate.app */,
 				2F1AC04C2E8EE8CE00115C4A /* InkSlateTests.xctest */,
 				2F1AC0562E8EE8CE00115C4A /* InkSlateUITests.xctest */,
+				2F9B00012F9B000100011111 /* InkSlateShareExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		2F1F050C2F9AA8C900510912 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				2F9B00042F9B000400011111 /* InkSlateShareExtension */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -176,6 +209,28 @@
 			productReference = 2F1AC0562E8EE8CE00115C4A /* InkSlateUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		2F9B00032F9B000300011111 /* InkSlateShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2F9B00082F9B000800011111 /* Build configuration list for PBXNativeTarget "InkSlateShareExtension" */;
+			buildPhases = (
+				2F9B00052F9B000500011111 /* Sources */,
+				2F9B00062F9B000600011111 /* Frameworks */,
+				2F9B00072F9B000700011111 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				2F9B00042F9B000400011111 /* InkSlateShareExtension */,
+			);
+			name = InkSlateShareExtension;
+			packageProductDependencies = (
+			);
+			productName = InkSlateShareExtension;
+			productReference = 2F9B00012F9B000100011111 /* InkSlateShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -183,8 +238,8 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1640;
-				LastUpgradeCheck = 2600;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					2F1AC03A2E8EE8CC00115C4A = {
 						CreatedOnToolsVersion = 16.4;
@@ -196,6 +251,9 @@
 					2F1AC0552E8EE8CE00115C4A = {
 						CreatedOnToolsVersion = 16.4;
 						TestTargetID = 2F1AC03A2E8EE8CC00115C4A;
+					};
+					2F9B00032F9B000300011111 = {
+						CreatedOnToolsVersion = 16.4;
 					};
 				};
 			};
@@ -214,6 +272,7 @@
 			projectRoot = "";
 			targets = (
 				2F1AC03A2E8EE8CC00115C4A /* InkSlate */,
+				2F9B00032F9B000300011111 /* InkSlateShareExtension */,
 				2F1AC04B2E8EE8CE00115C4A /* InkSlateTests */,
 				2F1AC0552E8EE8CE00115C4A /* InkSlateUITests */,
 			);
@@ -236,6 +295,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		2F1AC0542E8EE8CE00115C4A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2F9B00072F9B000700011111 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -266,6 +332,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2F9B00052F9B000500011111 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -289,11 +362,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = InkSlate/InkSlate.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = QD6PAWS488;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = InkSlate/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSCameraUsageDescription = "InkSlate uses the camera to let you take photos directly for your journal entries and recipes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "InkSlate accesses your photo library to let you attach photos to your journal entries and recipes for a richer experience.";
@@ -306,12 +380,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.23;
+				MARKETING_VERSION = 1.24;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lucas.InkSlateNew;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TMDB_API_KEY = "";
 			};
 			name = Debug;
 		};
@@ -322,11 +397,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = InkSlate/InkSlate.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = QD6PAWS488;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = InkSlate/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSCameraUsageDescription = "InkSlate uses the camera to let you take photos directly for your journal entries and recipes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "InkSlate accesses your photo library to let you attach photos to your journal entries and recipes for a richer experience.";
@@ -339,12 +415,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.23;
+				MARKETING_VERSION = 1.24;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lucas.InkSlateNew;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TMDB_API_KEY = "";
 			};
 			name = Release;
 		};
@@ -543,6 +620,56 @@
 			};
 			name = Release;
 		};
+		2F9B000A2F9B000A00011111 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = InkSlateShareExtension/InkSlateShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = QD6PAWS488;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = InkSlateShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.24;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lucas.InkSlateNew.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2F9B000B2F9B000B00011111 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = InkSlateShareExtension/InkSlateShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = QD6PAWS488;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = InkSlateShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.24;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lucas.InkSlateNew.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -578,6 +705,15 @@
 			buildConfigurations = (
 				2F1AC0682E8EE8CE00115C4A /* Debug */,
 				2F1AC0692E8EE8CE00115C4A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2F9B00082F9B000800011111 /* Build configuration list for PBXNativeTarget "InkSlateShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2F9B000A2F9B000A00011111 /* Debug */,
+				2F9B000B2F9B000B00011111 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

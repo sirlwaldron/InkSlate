@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Profile Main View
 struct ProfileMainView: View {
@@ -24,7 +25,7 @@ struct ProfileMainView: View {
                         .frame(width: 100, height: 100)
                     
                     if let userImage = profileService.userImage {
-                        Image(uiImage: userImage)
+                        Image(platformImage: userImage)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 100, height: 100)
@@ -87,7 +88,7 @@ struct ProfileMainView: View {
         .padding(DesignSystem.Spacing.lg)
         .background(DesignSystem.Colors.background)
         .navigationTitle("Profile")
-        .navigationBarTitleDisplayMode(.large)
+        .inlineNavigationTitle()
         .sheet(isPresented: $showingAbout) {
             AboutView()
         }
@@ -156,9 +157,9 @@ struct AboutView: View {
             .padding(DesignSystem.Spacing.lg)
             .background(DesignSystem.Colors.background)
             .navigationTitle("About")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
@@ -176,7 +177,7 @@ struct ProfileCustomizationView: View {
     
     @State private var tempUserName: String = ""
     @State private var tempUserIcon: String = ""
-    @State private var selectedImage: UIImage?
+    @State private var selectedImage: PlatformImage?
     @State private var showingImagePicker = false
     
     var body: some View {
@@ -212,7 +213,7 @@ struct ProfileCustomizationView: View {
                                     .frame(width: 50, height: 50)
                                 
                                 if let selectedImage = selectedImage {
-                                    Image(uiImage: selectedImage)
+                                    Image(platformImage: selectedImage)
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
                                         .frame(width: 50, height: 50)
@@ -257,6 +258,41 @@ struct ProfileCustomizationView: View {
                                 )
                         }
                         
+                        // Icon Picker
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                            Text("Icon")
+                                .font(DesignSystem.Typography.callout)
+                                .fontWeight(.medium)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
+                                ForEach(profileService.availableIcons, id: \.self) { icon in
+                                    Button {
+                                        tempUserIcon = icon
+                                    } label: {
+                                        ZStack {
+                                            Circle()
+                                                .fill(DesignSystem.Colors.backgroundTertiary)
+                                                .frame(width: 44, height: 44)
+                                                .overlay(
+                                                    Circle()
+                                                        .stroke(
+                                                            (tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon) == icon
+                                                                ? DesignSystem.Colors.accent
+                                                                : DesignSystem.Colors.border,
+                                                            lineWidth: 2
+                                                        )
+                                                )
+                                            Image(systemName: icon)
+                                                .font(.system(size: 20, weight: .semibold))
+                                                .foregroundColor(DesignSystem.Colors.accent)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        
                         // Photo Selection
                         VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                             Text("Profile Photo")
@@ -290,22 +326,47 @@ struct ProfileCustomizationView: View {
                                 )
                             }
                             .buttonStyle(PlainButtonStyle())
+                            
+                            Button(role: .destructive) {
+                                selectedImage = nil
+                                profileService.removeProfileImage()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.red)
+                                    
+                                    Text("Remove Photo")
+                                        .font(DesignSystem.Typography.body)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.red)
+                                    
+                                    Spacer()
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                        .fill(Color.red.opacity(0.08))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(profileService.userImage == nil && selectedImage == nil)
                         }
                     }
                 }
                 .padding(DesignSystem.Spacing.xl)
             }
             .background(DesignSystem.Colors.background)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
                         saveChanges()
                     }
@@ -320,6 +381,7 @@ struct ProfileCustomizationView: View {
         .onAppear {
             tempUserName = profileService.userName
             tempUserIcon = profileService.userIcon
+            selectedImage = profileService.userImage
         }
     }
     
@@ -338,8 +400,9 @@ struct ProfileCustomizationView: View {
 }
 
 // MARK: - Profile Image Picker
+#if canImport(UIKit)
 struct ProfileImagePicker: UIViewControllerRepresentable {
-    @Binding var selectedImage: UIImage?
+    @Binding var selectedImage: PlatformImage?
     @Environment(\.dismiss) private var dismiss
     
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -358,22 +421,39 @@ struct ProfileImagePicker: UIViewControllerRepresentable {
     
     class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: ProfileImagePicker
-        
-        init(_ parent: ProfileImagePicker) {
-            self.parent = parent
-        }
-        
+        init(_ parent: ProfileImagePicker) { self.parent = parent }
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let editedImage = info[.editedImage] as? UIImage {
-                parent.selectedImage = editedImage
-            } else if let originalImage = info[.originalImage] as? UIImage {
-                parent.selectedImage = originalImage
-            }
+            if let editedImage = info[.editedImage] as? UIImage { parent.selectedImage = editedImage }
+            else if let originalImage = info[.originalImage] as? UIImage { parent.selectedImage = originalImage }
             parent.dismiss()
         }
-        
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.dismiss()
-        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
     }
 }
+#elseif canImport(AppKit)
+import AppKit
+struct ProfileImagePicker: View {
+    @Binding var selectedImage: PlatformImage?
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Choose a profile image")
+            Button("Choose Image…") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.png, .jpeg]
+                panel.allowsMultipleSelection = false
+                if panel.runModal() == .OK, let url = panel.url,
+                   let data = try? Data(contentsOf: url),
+                   let image = platformImage(from: data) {
+                    selectedImage = image
+                }
+                dismiss()
+            }
+            Button("Cancel") { dismiss() }
+        }
+        .padding()
+        .frame(minWidth: 280, minHeight: 120)
+    }
+}
+#endif

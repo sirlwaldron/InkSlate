@@ -117,7 +117,7 @@ struct ModernHomeHeader: View {
                                     .shadow(color: DesignSystem.Colors.textSecondary.opacity(0.08), radius: 2, x: 0, y: 1)
 
                                 if let userImage = profileService.userImage {
-                                    Image(uiImage: userImage)
+                                    Image(platformImage: userImage)
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
                                         .frame(width: 50, height: 50)
@@ -132,7 +132,7 @@ struct ModernHomeHeader: View {
                         .buttonStyle(PlainButtonStyle())
                         .offset(x: -15, y: -15) // overlap effect from left
                     }
-                    .frame(maxWidth: UIScreen.main.bounds.width * 0.85) // 85% of screen width - moved more to the right
+                    .frame(maxWidth: platformScreenWidth * 0.85) // 85% of screen width - moved more to the right
                 }
                 .padding(.leading, 60) // Moved card further to the right
                 .onTapGesture { showingSettings = true }

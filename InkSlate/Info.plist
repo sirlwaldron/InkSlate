@@ -2,6 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.lucas.InkSlateNew</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>inksln</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
@@ -12,7 +25,7 @@
 		<string>com.lucas.InkSlateNew.cleanup</string>
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<true/>
 	<key>NSCalendarsUsageDescription</key>
 	<string>InkSlate needs access to your calendar to display and manage your events.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
@@ -27,5 +40,7 @@
 	<string>https://sirlwaldron.github.io/InkSlate/privacy.html</string>
 	<key>TermsOfUseURL</key>
 	<string>https://sirlwaldron.github.io/InkSlate/terms.html</string>
+	<key>TMDB_API_KEY</key>
+	<string>$(TMDB_API_KEY)</string>
 </dict>
 </plist>

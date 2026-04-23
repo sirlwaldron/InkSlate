@@ -38,7 +38,7 @@ struct RecipeValidation {
         guard let data = data else { return true } // Optional
         guard data.count > 0 else { return false }
         guard data.count < Int(RecipeConstants.maxImageSize) else { return false }
-        return UIImage(data: data) != nil
+        return platformImage(from: data) != nil
     }
 }
 

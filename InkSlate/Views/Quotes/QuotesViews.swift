@@ -264,6 +264,8 @@ struct ModernQuoteCard: View {
     @State private var showingEditSheet = false
     @State private var showingDetailView = false
     @State private var showingDeleteAlert = false
+    @State private var showingShareSheet = false
+    @State private var shareItems: [Any] = []
     
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -292,6 +294,14 @@ struct ModernQuoteCard: View {
                         Image(systemName: quote.isFavorite ? "star.fill" : "star")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(quote.isFavorite ? .yellow : DesignSystem.Colors.textSecondary)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    // Share button
+                    Button(action: shareQuote) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
                     }
                     .buttonStyle(PlainButtonStyle())
                     
@@ -349,6 +359,10 @@ struct ModernQuoteCard: View {
             showingDetailView = true
         }
         .contextMenu {
+            Button(action: shareQuote) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            
             Button(action: toggleFavorite) {
                 Label(quote.isFavorite ? "Remove from Favorites" : "Add to Favorites", 
                       systemImage: quote.isFavorite ? "star.slash" : "star")
@@ -369,6 +383,9 @@ struct ModernQuoteCard: View {
         }
         .sheet(isPresented: $showingDetailView) {
             EnhancedModernQuoteDetailView(quote: quote)
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(items: shareItems)
         }
         .alert("Delete Quote", isPresented: $showingDeleteAlert) {
             Button("Cancel", role: .cancel) { }
@@ -401,6 +418,14 @@ struct ModernQuoteCard: View {
                 print("Failed to delete quote: \(error)")
             }
         }
+    }
+    
+    private func shareQuote() {
+        let text = quote.text ?? ""
+        let author = quote.author ?? ""
+        let payload = author.isEmpty ? "“\(text)”" : "“\(text)” — \(author)"
+        shareItems = [payload]
+        showingShareSheet = true
     }
 }
 
@@ -532,16 +557,16 @@ struct ModernAddQuoteView: View {
                 .padding(DesignSystem.Spacing.xl)
             }
             .background(DesignSystem.Colors.background)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
                         saveQuote()
                     }
@@ -663,16 +688,16 @@ struct ModernEditQuoteView: View {
                 .padding(DesignSystem.Spacing.xl)
             }
             .background(DesignSystem.Colors.background)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
                         saveChanges()
                     }
@@ -885,9 +910,9 @@ struct EnhancedModernQuoteDetailView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Quote Details")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }

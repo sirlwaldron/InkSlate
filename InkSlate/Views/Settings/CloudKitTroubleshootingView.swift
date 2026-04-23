@@ -4,7 +4,12 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct CloudKitTroubleshootingView: View {
     @State private var cloudKitStatus: CloudKitStatus = .unknown
@@ -34,7 +39,7 @@ struct CloudKitTroubleshootingView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemBackground))
+                            .fill(Color.adaptiveSystemBackground)
                             .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
                     )
                     
@@ -73,7 +78,7 @@ struct CloudKitTroubleshootingView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemBackground))
+                            .fill(Color.adaptiveSystemBackground)
                             .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
                     )
                     
@@ -105,7 +110,7 @@ struct CloudKitTroubleshootingView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(Color(.systemBackground))
+                            .background(Color.adaptiveSystemBackground)
                             .foregroundColor(.blue)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
@@ -118,12 +123,12 @@ struct CloudKitTroubleshootingView: View {
                 .padding(16)
             }
             .navigationTitle("iCloud Sync")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -251,9 +256,15 @@ struct CloudKitTroubleshootingView: View {
     }
     
     private func openSettings() {
+        #if canImport(UIKit)
         if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(settingsUrl)
         }
+        #elseif canImport(AppKit)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.AppleIDPrefPane") {
+            NSWorkspace.shared.open(url)
+        }
+        #endif
     }
 }
 

@@ -7,7 +7,13 @@
 //
 
 import SwiftUI
+import Combine
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Theme Service (FSNotes-inspired)
 class ThemeService: ObservableObject {
@@ -17,53 +23,67 @@ class ThemeService: ObservableObject {
     @Published var dynamicFonts: Bool = true
     @Published var fontSize: CGFloat = 16
     
+    private enum Keys {
+        static let isDarkMode = "theme.isDarkMode"
+        static let dynamicFonts = "theme.dynamicFonts"
+        static let fontSize = "theme.fontSize"
+    }
+    
     private init() {
-        // Initialize with system appearance
-        updateAppearance()
+        loadFromDefaults()
+        applyTheme()
     }
     
-    
-    deinit {
-        
-    }
-    
-    func updateAppearance() {
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            isDarkMode = windowScene.traitCollection.userInterfaceStyle == .dark
+    private func loadFromDefaults() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Keys.isDarkMode) != nil {
+            isDarkMode = defaults.bool(forKey: Keys.isDarkMode)
+        }
+        if defaults.object(forKey: Keys.dynamicFonts) != nil {
+            dynamicFonts = defaults.bool(forKey: Keys.dynamicFonts)
+        }
+        if defaults.object(forKey: Keys.fontSize) != nil {
+            let v = defaults.double(forKey: Keys.fontSize)
+            if v > 0 { fontSize = CGFloat(v) }
         }
     }
     
     func toggleDarkMode() {
         isDarkMode.toggle()
-        // Apply theme changes
-        applyTheme()
+        persist()
+    }
+    
+    func setDarkMode(_ enabled: Bool) {
+        isDarkMode = enabled
+        persist()
     }
     
     func setDynamicFonts(_ enabled: Bool) {
         dynamicFonts = enabled
-        applyTheme()
+        persist()
     }
     
     func setFontSize(_ size: CGFloat) {
         fontSize = size
+        persist()
+    }
+    
+    private func persist() {
+        let defaults = UserDefaults.standard
+        defaults.set(isDarkMode, forKey: Keys.isDarkMode)
+        defaults.set(dynamicFonts, forKey: Keys.dynamicFonts)
+        defaults.set(Double(fontSize), forKey: Keys.fontSize)
         applyTheme()
     }
     
     private func applyTheme() {
-        // Update UI appearance based on theme
-        if isDarkMode {
-            // Dark mode colors
-            UINavigationBar.appearance().barTintColor = UIColor.systemBackground
-            UINavigationBar.appearance().tintColor = UIColor.label
-            UITextView.appearance().backgroundColor = UIColor.systemBackground
-            UITextView.appearance().textColor = UIColor.label
-        } else {
-            // Light mode colors
-            UINavigationBar.appearance().barTintColor = UIColor.systemBackground
-            UINavigationBar.appearance().tintColor = UIColor.label
-            UITextView.appearance().backgroundColor = UIColor.systemBackground
-            UITextView.appearance().textColor = UIColor.label
-        }
+        #if canImport(UIKit)
+        UINavigationBar.appearance().barTintColor = UIColor.systemBackground
+        UINavigationBar.appearance().tintColor = UIColor.label
+        UITextView.appearance().backgroundColor = UIColor.systemBackground
+        UITextView.appearance().textColor = UIColor.label
+        #endif
+        // macOS uses system appearance; no need to set NSAppearance here
     }
 }
 
@@ -104,7 +124,7 @@ struct ThemeSettingsView: View {
                 Section("Appearance") {
                     Toggle("Dark Mode", isOn: $themeService.isDarkMode)
                         .onChange(of: themeService.isDarkMode) { _, newValue in
-                            themeService.toggleDarkMode()
+                            themeService.setDarkMode(newValue)
                         }
                     
                     Toggle("Dynamic Fonts", isOn: $themeService.dynamicFonts)
@@ -121,6 +141,9 @@ struct ThemeSettingsView: View {
                             .frame(width: 150)
                         Text("\(Int(themeService.fontSize))")
                             .foregroundColor(.secondary)
+                    }
+                    .onChange(of: themeService.fontSize) { _, newValue in
+                        themeService.setFontSize(newValue)
                     }
                 }
                 
@@ -139,9 +162,11 @@ struct ThemeSettingsView: View {
                 }
             }
             .navigationTitle("Theme Settings")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }

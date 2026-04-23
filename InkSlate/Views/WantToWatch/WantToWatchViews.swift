@@ -20,6 +20,7 @@ struct WantToWatchMainView: View {
     @State private var searchResults: [TMDBItem] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var searchErrorMessage: String?
     @State private var showingWatchedOnly = false
     @State private var selectedFilter: WatchFilter? = nil // nil means "All"
     @State private var selectedCategory: String? = nil // nil means "All Categories"
@@ -298,6 +299,25 @@ struct WantToWatchMainView: View {
                             Spacer()
                         }
                             .frame(height: 300)
+                    } else if let error = searchErrorMessage, !searchText.isEmpty {
+                        VStack(spacing: DesignSystem.Spacing.xl) {
+                            Spacer()
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 48, weight: .light))
+                                .foregroundColor(DesignSystem.Colors.warning)
+                            VStack(spacing: 12) {
+                                Text("Search unavailable")
+                                    .font(DesignSystem.Typography.title1)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                                Text(error)
+                                    .font(DesignSystem.Typography.callout)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            Spacer()
+                        }
+                        .frame(height: 300)
                     } else if !searchText.isEmpty && !searchResults.isEmpty {
                             VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
                             HStack {
@@ -408,7 +428,7 @@ struct WantToWatchMainView: View {
                     }
                 }
             }
-            .navigationBarHidden(true)
+            .navigationBarHiddenIfPossible(true)
             .onChange(of: searchText) { _, newValue in
                 performSearch(newValue)
             }
@@ -444,13 +464,23 @@ struct WantToWatchMainView: View {
         
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         
+        // If TMDB isn't configured, don't even attempt network calls.
+        if TMDBConfig.apiKey == nil {
+            searchResults = []
+            isSearching = false
+            searchErrorMessage = TMDBError.missingAPIKey.localizedDescription
+            return
+        }
+        
         if trimmed.isEmpty {
             searchResults = []
             isSearching = false
+            searchErrorMessage = nil
             return
         }
         
         isSearching = true
+        searchErrorMessage = nil
         searchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 350_000_000)
@@ -465,12 +495,27 @@ struct WantToWatchMainView: View {
                 if !Task.isCancelled {
                     searchResults = []
                     isSearching = false
+                    searchErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 }
             }
         }
     }
     
     private func addToWantToWatch(_ item: TMDBItem) {
+        // Safety: only allow movies/tv (TMDB multi-search can contain other types).
+        guard item.mediaType == "movie" || item.mediaType == "tv" else { return }
+        
+        // Prevent duplicates.
+        let dupReq: NSFetchRequest<WantToWatchItem> = WantToWatchItem.fetchRequest()
+        dupReq.fetchLimit = 1
+        dupReq.predicate = NSPredicate(format: "tmdbId == %d AND isMovie == %@", item.id, NSNumber(value: item.mediaType == "movie"))
+        if let existing = try? viewContext.fetch(dupReq), !existing.isEmpty {
+            // Already added; clear search to give instant feedback.
+            searchText = ""
+            searchResults = []
+            return
+        }
+        
         let newItem = WantToWatchItem(context: viewContext)
         newItem.id = UUID()  // Required for CloudKit sync
         newItem.createdDate = Date()
@@ -888,9 +933,9 @@ struct WatchStatsView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Statistics")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
@@ -1036,7 +1081,9 @@ struct SearchBarEnhanced: View {
             TextField("Search movies, shows...", text: $text)
                 .font(DesignSystem.Typography.body)
                 .fontWeight(.medium)
+                #if os(iOS)
                 .textInputAutocapitalization(.none)
+                #endif
                 .foregroundColor(DesignSystem.Colors.textPrimary)
                 .focused($isFocused)
                 .tint(DesignSystem.Colors.info)
@@ -1532,9 +1579,9 @@ struct ItemDetailView: View {
             }
             .background(DesignSystem.Colors.background)
             .navigationTitle("Details")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("Done") {
                         dismiss()
                     }
@@ -1930,6 +1977,13 @@ struct WantToWatchItemCardEnhanced: View {
             isPressed = pressing
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                showDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .contextMenu {
             Button(role: .destructive) {
                 showDeleteConfirmation = true
             } label: {
