@@ -1,0 +1,444 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+// MARK: - Profile Main View
+struct ProfileMainView: View {
+    @State private var showingAbout = false
+    @State private var showingCustomization = false
+    @EnvironmentObject private var profileService: ProfileService
+    
+    var body: some View {
+        VStack(spacing: DesignSystem.Spacing.xl) {
+            VStack(spacing: DesignSystem.Spacing.lg) {
+                ZStack {
+                    Circle()
+                        .fill(DesignSystem.Colors.accent.opacity(0.1))
+                        .frame(width: 100, height: 100)
+                    
+                    if let userImage = profileService.userImage {
+                        Image(platformImage: userImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 100, height: 100)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: profileService.userIcon)
+                            .font(.system(size: 60))
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                }
+                
+                Text(profileService.userName)
+                    .font(DesignSystem.Typography.title1)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+            }
+            
+            VStack(spacing: DesignSystem.Spacing.md) {
+                Button(action: { showingCustomization = true }) {
+                    HStack {
+                        Image(systemName: "person.circle")
+                            .font(.system(size: 16, weight: .medium))
+                        Text("Customize Profile")
+                            .font(DesignSystem.Typography.body)
+                            .fontWeight(.medium)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .padding(DesignSystem.Spacing.lg)
+                    .background(DesignSystem.Colors.surface)
+                    .minimalistCard(.outlined)
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                Button(action: { showingAbout = true }) {
+                    HStack {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 16, weight: .medium))
+                        Text("About")
+                            .font(DesignSystem.Typography.body)
+                            .fontWeight(.medium)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .padding(DesignSystem.Spacing.lg)
+                    .background(DesignSystem.Colors.surface)
+                    .minimalistCard(.outlined)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            
+            Spacer()
+        }
+        .padding(DesignSystem.Spacing.lg)
+        .background(DesignSystem.Colors.background)
+        .navigationTitle("Profile")
+        .inlineNavigationTitle()
+        .sheet(isPresented: $showingAbout) {
+            AboutView()
+        }
+        .sheet(isPresented: $showingCustomization) {
+            ProfileCustomizationView(profileService: profileService)
+        }
+    }
+}
+
+struct AboutView: View {
+    @Environment(\.dismiss) private var dismiss
+    
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String
+        if let build, !build.isEmpty { return "\(short) (\(build))" }
+        return short
+    }
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: DesignSystem.Spacing.xl) {
+                VStack(spacing: DesignSystem.Spacing.lg) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                            .fill(DesignSystem.Colors.accent.opacity(0.1))
+                            .frame(width: 80, height: 80)
+                        
+                        Image(systemName: "app.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                    
+                    VStack(spacing: DesignSystem.Spacing.sm) {
+                        Text("InkSlate")
+                            .font(DesignSystem.Typography.title1)
+                            .fontWeight(.bold)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                        
+                        Text("Version \(appVersion)")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                    }
+                }
+                
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                    Text("About InkSlate")
+                        .font(DesignSystem.Typography.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                    
+                    Text("InkSlate is your personal productivity companion for notes, tasks, journals, budgets, and more. Your content is stored in Core Data on this device, and when you are signed into iCloud with CloudKit enabled for InkSlate, selected data can sync across your Apple devices.")
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
+                }
+                
+                Spacer()
+                
+                VStack(spacing: DesignSystem.Spacing.sm) {
+                    Text("Made with ❤️")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                    
+                    Text("© 2026 InkSlate. All rights reserved.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                }
+            }
+            .padding(DesignSystem.Spacing.lg)
+            .background(DesignSystem.Colors.background)
+            .navigationTitle("About")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .foregroundColor(DesignSystem.Colors.accent)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Profile Customization View
+struct ProfileCustomizationView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var profileService: ProfileService
+    
+    @State private var tempUserName: String = ""
+    @State private var tempUserIcon: String = ""
+    @State private var selectedImage: PlatformImage?
+    @State private var showingImagePicker = false
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: DesignSystem.Spacing.xl) {
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                        Text("Customize Profile")
+                            .font(DesignSystem.Typography.title1)
+                            .fontWeight(.bold)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                        
+                        Text("Personalize your InkSlate experience")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        Text("Preview")
+                            .font(DesignSystem.Typography.callout)
+                            .fontWeight(.semibold)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        HStack(spacing: 12) {
+                            ZStack {
+                                Circle()
+                                    .fill(DesignSystem.Colors.accent)
+                                    .frame(width: 50, height: 50)
+                                
+                                if let selectedImage = selectedImage {
+                                    Image(platformImage: selectedImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 50, height: 50)
+                                        .clipShape(Circle())
+                                } else {
+                                    Image(systemName: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon)
+                                        .font(.system(size: 22, weight: .medium))
+                                        .foregroundColor(DesignSystem.Colors.textInverse)
+                                }
+                            }
+                            
+                            Text(tempUserName.isEmpty ? profileService.userName : tempUserName)
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            Spacer()
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                                .fill(DesignSystem.Colors.surface)
+                                .shadow(color: DesignSystem.Shadows.medium, radius: 4, x: 0, y: 2)
+                        )
+                    }
+                    
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                            Text("Name")
+                                .font(DesignSystem.Typography.callout)
+                                .fontWeight(.medium)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            TextField("Enter your name", text: $tempUserName)
+                                .font(DesignSystem.Typography.body)
+                                .padding(DesignSystem.Spacing.md)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                        .fill(DesignSystem.Colors.backgroundTertiary)
+                                )
+                        }
+                        
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                            Text("Icon")
+                                .font(DesignSystem.Typography.callout)
+                                .fontWeight(.medium)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
+                                ForEach(profileService.availableIcons, id: \.self) { icon in
+                                    Button {
+                                        tempUserIcon = icon
+                                    } label: {
+                                        ZStack {
+                                            Circle()
+                                                .fill(DesignSystem.Colors.backgroundTertiary)
+                                                .frame(width: 44, height: 44)
+                                                .overlay(
+                                                    Circle()
+                                                        .stroke(
+                                                            (tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon) == icon
+                                                                ? DesignSystem.Colors.accent
+                                                                : DesignSystem.Colors.border,
+                                                            lineWidth: 2
+                                                        )
+                                                )
+                                            Image(systemName: icon)
+                                                .font(.system(size: 20, weight: .semibold))
+                                                .foregroundColor(DesignSystem.Colors.accent)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                            Text("Profile Photo")
+                                .font(DesignSystem.Typography.callout)
+                                .fontWeight(.medium)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            Button(action: {
+                                showingImagePicker = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(DesignSystem.Colors.accent)
+                                    
+                                    Text(selectedImage == nil ? "Choose Photo" : "Change Photo")
+                                        .font(DesignSystem.Typography.body)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                        .fill(DesignSystem.Colors.backgroundTertiary)
+                                )
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            Button(role: .destructive) {
+                                selectedImage = nil
+                                profileService.removeProfileImage()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.red)
+                                    
+                                    Text("Remove Photo")
+                                        .font(DesignSystem.Typography.body)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.red)
+                                    
+                                    Spacer()
+                                }
+                                .padding(DesignSystem.Spacing.md)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                        .fill(Color.red.opacity(0.08))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(profileService.userImage == nil && selectedImage == nil)
+                        }
+                    }
+                }
+                .padding(DesignSystem.Spacing.xl)
+            }
+            .background(DesignSystem.Colors.background)
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                }
+                
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Save") {
+                        saveChanges()
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.accent)
+                }
+            }
+        }
+        .sheet(isPresented: $showingImagePicker) {
+            ProfileImagePicker(selectedImage: $selectedImage)
+        }
+        .onAppear {
+            tempUserName = profileService.userName
+            tempUserIcon = profileService.userIcon
+            selectedImage = profileService.userImage
+        }
+    }
+    
+    private func saveChanges() {
+        if let selectedImage = selectedImage {
+            profileService.updateProfileImage(selectedImage)
+        }
+        
+        profileService.updateProfile(
+            name: tempUserName.isEmpty ? profileService.userName : tempUserName,
+            icon: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon
+        )
+        dismiss()
+    }
+}
+
+// MARK: - Profile Image Picker
+#if canImport(UIKit)
+struct ProfileImagePicker: UIViewControllerRepresentable {
+    @Binding var selectedImage: PlatformImage?
+    @Environment(\.dismiss) private var dismiss
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.sourceType = .photoLibrary
+        picker.allowsEditing = true
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ProfileImagePicker
+        init(_ parent: ProfileImagePicker) { self.parent = parent }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let editedImage = info[.editedImage] as? UIImage { parent.selectedImage = editedImage }
+            else if let originalImage = info[.originalImage] as? UIImage { parent.selectedImage = originalImage }
+            parent.dismiss()
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
+    }
+}
+#elseif canImport(AppKit)
+import AppKit
+struct ProfileImagePicker: View {
+    @Binding var selectedImage: PlatformImage?
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Choose a profile image")
+            Button("Choose Image…") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.png, .jpeg]
+                panel.allowsMultipleSelection = false
+                if panel.runModal() == .OK, let url = panel.url,
+                   let data = try? Data(contentsOf: url),
+                   let image = platformImage(from: data) {
+                    selectedImage = image
+                }
+                dismiss()
+            }
+            Button("Cancel") { dismiss() }
+        }
+        .padding()
+        .frame(minWidth: 280, minHeight: 120)
+    }
+}
+#endif

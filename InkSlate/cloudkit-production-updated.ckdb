@@ -1,0 +1,24 @@
+DEFINE SCHEMA
+
+    // NOTE:
+    // This file captures InkSlate's custom CloudKit record types added in code.
+    // Core Data mirrored types (CD_*) are managed by CloudKit/CoreData mirroring and should be exported
+    // directly from CloudKit Dashboard for a complete schema snapshot.
+
+    RECORD TYPE NoteAttachment (
+        "___createTime" TIMESTAMP,
+        "___createdBy"  REFERENCE,
+        "___etag"       STRING,
+        "___modTime"    TIMESTAMP,
+        "___modifiedBy" REFERENCE,
+        "___recordID"   REFERENCE,
+        file            ASSET,
+        noteID          STRING QUERYABLE SEARCHABLE SORTABLE,
+        filename        STRING QUERYABLE SEARCHABLE SORTABLE,
+        uti             STRING QUERYABLE SEARCHABLE SORTABLE,
+        kind            STRING QUERYABLE SEARCHABLE SORTABLE,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
+

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.lucas.InkSlateNew</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>inksln</string>
+			</array>
+		</dict>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.lucas.InkSlateNew.cleanup</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>InkSlate needs access to your calendar to display and manage your events.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>InkSlate needs full access to your calendar to read and manage your events, create new events, and sync changes.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>InkSlate can create and modify events in your calendar with write-only access.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>InkSlate accesses your photo library to let you attach photos to your notes, places, recipes, and profile for a richer experience.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>InkSlate needs permission to save photos to your photo library.</string>
+	<key>PrivacyPolicyURL</key>
+	<string>https://sirlwaldron.github.io/InkSlate/privacy.html</string>
+	<key>TermsOfUseURL</key>
+	<string>https://sirlwaldron.github.io/InkSlate/terms.html</string>
+	<key>TMDB_API_KEY</key>
+	<string>$(TMDB_API_KEY)</string>
+</dict>
+</plist>
