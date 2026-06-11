@@ -82,7 +82,7 @@ struct PaywallView: View {
                     .multilineTextAlignment(.center)
             }
 
-            Text("7-day free trial on monthly and yearly plans")
+            Text(selectedPlanTrialHeader)
                 .font(DesignSystem.Typography.callout)
                 .foregroundStyle(themeService.accentColor)
                 .multilineTextAlignment(.center)
@@ -145,6 +145,10 @@ struct PaywallView: View {
 
     private var purchaseSection: some View {
         VStack(spacing: DesignSystem.Spacing.md) {
+            if selectedPlan.hasFreeTrial {
+                billingDisclosure
+            }
+
             Button {
                 Task { await purchaseSelectedPlan() }
             } label: {
@@ -165,6 +169,13 @@ struct PaywallView: View {
             .foregroundStyle(Color.white)
             .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md, style: .continuous))
             .disabled(subscription.isPurchasing || productForSelectedPlan == nil)
+
+            if selectedPlan.hasFreeTrial {
+                Text("Cancel anytime in Settings › Apple ID › Subscriptions.")
+                    .font(DesignSystem.Typography.footnote)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
 
             if let message = subscription.purchaseErrorMessage {
                 Text(message)
@@ -223,10 +234,55 @@ struct PaywallView: View {
         }
     }
 
+    private var selectedPlanTrialHeader: String {
+        switch selectedPlan {
+        case .monthly:
+            let price = subscription.monthlyProduct?.displayPrice ?? "$1.99"
+            return "7 days free, then \(price)/month"
+        case .yearly:
+            let price = subscription.yearlyProduct?.displayPrice ?? "$14.99"
+            return "7 days free, then \(price)/year"
+        case .lifetime:
+            return "One-time purchase — no subscription"
+        }
+    }
+
+    private var billingDisclosure: some View {
+        Text(billingDisclosureText)
+            .font(DesignSystem.Typography.callout)
+            .foregroundStyle(DesignSystem.Colors.textPrimary)
+            .multilineTextAlignment(.center)
+            .padding(DesignSystem.Spacing.md)
+            .frame(maxWidth: .infinity)
+            .background(DesignSystem.Colors.surface)
+            .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md, style: .continuous)
+                    .strokeBorder(DesignSystem.Colors.border, lineWidth: 1)
+            )
+    }
+
+    private var billingDisclosureText: String {
+        switch selectedPlan {
+        case .monthly:
+            let price = subscription.monthlyProduct?.displayPrice ?? "$1.99"
+            return """
+            Your 7-day free trial starts today. When the trial ends, your Apple ID will be automatically charged \(price) for the first month. After that, \(price)/month renews automatically unless you cancel at least 24 hours before each renewal date.
+            """
+        case .yearly:
+            let price = subscription.yearlyProduct?.displayPrice ?? "$14.99"
+            return """
+            Your 7-day free trial starts today. When the trial ends, your Apple ID will be automatically charged \(price) for the first year. After that, \(price)/year renews automatically unless you cancel at least 24 hours before each renewal date.
+            """
+        case .lifetime:
+            return ""
+        }
+    }
+
     private var primaryButtonTitle: String {
         switch selectedPlan {
         case .monthly, .yearly:
-            return "Start Free Trial"
+            return "Start 7-Day Free Trial"
         case .lifetime:
             return "Unlock Lifetime Pro"
         }
@@ -235,11 +291,20 @@ struct PaywallView: View {
     private var subscriptionLegalBlurb: String {
         switch selectedPlan {
         case .monthly:
-            return "After your 7-day free trial, InkSlate Pro renews at the monthly price until canceled in Settings › Apple ID › Subscriptions."
+            let price = subscription.monthlyProduct?.displayPrice ?? "$1.99"
+            return """
+            InkSlate Pro Monthly includes a 7-day free trial. After the trial, \(price)/month is automatically charged to your Apple ID and the subscription renews each month unless canceled at least 24 hours before the end of the current period. Manage or cancel in Settings › Apple ID › Subscriptions.
+            """
         case .yearly:
-            return "After your 7-day free trial, InkSlate Pro renews yearly until canceled in Settings › Apple ID › Subscriptions."
+            let price = subscription.yearlyProduct?.displayPrice ?? "$14.99"
+            return """
+            InkSlate Pro Yearly includes a 7-day free trial. After the trial, \(price)/year is automatically charged to your Apple ID and the subscription renews each year unless canceled at least 24 hours before the end of the current period. Manage or cancel in Settings › Apple ID › Subscriptions.
+            """
         case .lifetime:
-            return "One-time purchase. No subscription. Restore anytime with the same Apple ID."
+            let price = subscription.lifetimeProduct?.displayPrice ?? "$49.99"
+            return """
+            InkSlate Pro Lifetime: one-time \(price) purchase. Permanent Pro access on devices using the same Apple ID. No subscription. Restore anytime via Restore Purchases.
+            """
         }
     }
 
@@ -263,6 +328,13 @@ private enum PaywallPlan: String, CaseIterable {
     case yearly
     case lifetime
 
+    var hasFreeTrial: Bool {
+        switch self {
+        case .monthly, .yearly: return true
+        case .lifetime: return false
+        }
+    }
+
     var title: String {
         switch self {
         case .monthly: return "Monthly"
@@ -271,19 +343,35 @@ private enum PaywallPlan: String, CaseIterable {
         }
     }
 
-    var subtitle: String {
+    func subtitle(displayPrice: String?) -> String {
         switch self {
-        case .monthly: return "7-day free trial"
-        case .yearly: return "7-day free trial · Save vs monthly"
-        case .lifetime: return "One-time · Keep forever"
+        case .monthly:
+            let price = displayPrice ?? "$1.99"
+            return "7 days free, then \(price)/month"
+        case .yearly:
+            let price = displayPrice ?? "$14.99"
+            return "7 days free, then \(price)/year"
+        case .lifetime:
+            return "One-time · Keep forever"
+        }
+    }
+
+    func priceLabel(displayPrice: String?) -> String {
+        switch self {
+        case .monthly:
+            return "\(displayPrice ?? "$1.99")/mo"
+        case .yearly:
+            return "\(displayPrice ?? "$14.99")/yr"
+        case .lifetime:
+            return displayPrice ?? "$49.99"
         }
     }
 
     var fallbackPrice: String {
         switch self {
         case .monthly: return "$1.99/mo"
-        case .yearly: return "$15/yr"
-        case .lifetime: return "$49"
+        case .yearly: return "$14.99/yr"
+        case .lifetime: return "$49.99"
         }
     }
 }
@@ -317,14 +405,22 @@ private struct PaywallPlanCard: View {
                                 .clipShape(Capsule())
                         }
                     }
-                    Text(plan.subtitle)
+                    Text(plan.subtitle(displayPrice: product?.displayPrice))
                         .font(DesignSystem.Typography.footnote)
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
                 }
                 Spacer()
-                Text(product?.displayPrice ?? plan.fallbackPrice)
-                    .font(DesignSystem.Typography.headline)
-                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    if plan.hasFreeTrial {
+                        Text("Free for 7 days")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(themeService.accentColor)
+                    }
+                    Text(plan.priceLabel(displayPrice: product?.displayPrice))
+                        .font(DesignSystem.Typography.headline)
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                }
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? themeService.accentColor : DesignSystem.Colors.textTertiary)
             }

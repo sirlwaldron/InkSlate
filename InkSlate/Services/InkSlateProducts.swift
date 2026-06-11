@@ -3,8 +3,8 @@ import Foundation
 // MARK: - App Store product identifiers (must match App Store Connect + InkSlate.storekit)
 
 enum InkSlateProducts {
-    static let monthly = "com.lucas.InkSlateNew.pro.monthly"
-    static let yearly = "com.lucas.InkSlateNew.pro.yearly"
+    static let monthly = "com.lucas.InkSlateNew.pro.sub.monthly"
+    static let yearly = "com.lucas.InkSlateNew.pro.sub.yearly"
     static let lifetime = "com.lucas.InkSlateNew.pro.lifetime"
 
     static let subscriptionIDs: Set<String> = [monthly, yearly]

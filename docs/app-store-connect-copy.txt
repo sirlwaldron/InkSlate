@@ -1,0 +1,93 @@
+InkSlate — App Store Connect copy (paste into each field)
+================================================================
+
+IMPORTANT: Upload a NEW iOS build (build 14+) before submitting. Build 13 (May 30)
+was uploaded BEFORE subscription code was added (June 2). Reviewers must see the paywall.
+
+
+--- SUBSCRIPTION GROUP: InkSlate Pro (ID 22124050) ---
+
+English (U.S.) localization:
+  Subscription Group Display Name: InkSlate Pro
+  App Name: InkSlate
+
+
+--- InkSlate Pro Monthly (com.lucas.InkSlateNew.pro.sub.monthly) ---
+
+Display Name:
+  InkSlate Pro Monthly
+
+Description:
+  Unlocks Mind Maps, Journal, To-Do, Recipes, Places, Quotes, and Watchlist. Notes, Budget, and Calendar stay free. Includes a 7-day free trial for new subscribers.
+
+Subscription Prices:
+  Confirm at least one price tier is set for all countries (e.g. $1.99/month).
+
+Review Notes (Under Review Information):
+  Open InkSlate → Settings → "Upgrade to InkSlate Pro", or tap any locked Pro module (e.g. Mind Maps, Journal). Select Monthly plan and tap "Start Free Trial". Sandbox purchase flow uses StoreKit 2. Existing lifetime purchasers retain Pro via Restore Purchases.
+
+
+--- InkSlate Pro Yearly (com.lucas.InkSlateNew.pro.sub.yearly) ---
+
+Display Name:
+  InkSlate Pro Yearly
+
+Description:
+  Best value yearly access to all Pro modules: Mind Maps, Journal, To-Do, Recipes, Places, Quotes, and Watchlist. Notes, Budget, and Calendar stay free. Includes a 7-day free trial for new subscribers.
+
+Subscription Prices:
+  Confirm pricing is set (e.g. $14.99/year).
+
+Review Notes:
+  Same paywall as monthly: Settings → Upgrade to InkSlate Pro. Select Yearly plan.
+
+
+--- InkSlate Pro Lifetime (com.lucas.InkSlateNew.pro.lifetime) — already APPROVED ---
+
+Keep as Non-Consumable. Do not delete. Still offered on paywall alongside subscriptions.
+
+
+--- iOS APP VERSION 2.0 — Notes for Review ---
+
+InkSlate Pro in-app purchases (Guideline 3.1.1):
+
+HOW TO TEST PURCHASES:
+1. Launch InkSlate (no login required).
+2. Path A: Settings → "Upgrade to InkSlate Pro"
+   Path B: Tap any Pro module from the home menu (Mind Maps, Journal, To-Do, Recipes, Places, Quotes, or Watchlist) — paywall appears.
+3. Choose Monthly, Yearly, or Lifetime. Tap purchase button.
+4. "Restore Purchases" is on the same screen.
+
+PRODUCTS:
+- com.lucas.InkSlateNew.pro.sub.monthly (auto-renewable, 7-day free trial)
+- com.lucas.InkSlateNew.pro.sub.yearly (auto-renewable, 7-day free trial)
+- com.lucas.InkSlateNew.pro.lifetime (non-consumable, one-time)
+
+FREE TIER (no purchase): Notes, Budget, Calendar, Settings, Profile.
+PRO TIER: Mind Maps, Journal, To-Do, Recipes, Places, Quotes, Watchlist.
+
+BUSINESS MODEL CHANGE:
+We previously offered only a lifetime non-consumable unlock. We now also offer monthly and yearly subscriptions. Users who already purchased lifetime retain permanent Pro access via Restore Purchases — we do not remove features from existing lifetime buyers.
+
+Terms of Use: https://sirlwaldron.github.io/InkSlate/terms.html
+Privacy Policy: https://sirlwaldron.github.io/InkSlate/privacy.html
+
+No demo account needed. iCloud sync is optional.
+
+
+--- iOS APP VERSION 2.0 — What's New ---
+
+InkSlate Pro is now available as monthly or yearly subscriptions (7-day free trial) in addition to the existing lifetime purchase. Notes, Budget, and Calendar remain free.
+
+
+--- APP PRIVACY / METADATA CHECKLIST ---
+
+[ ] Privacy Policy URL: https://sirlwaldron.github.io/InkSlate/privacy.html
+[ ] Terms of Use (EULA): https://sirlwaldron.github.io/InkSlate/terms.html
+     (App Store Connect → App Information → set custom EULA link OR use standard Apple EULA + link terms in description)
+[ ] Push updated terms.html to GitHub Pages BEFORE submitting
+[ ] Paid Applications Agreement signed (Account Holder)
+[ ] Banking & tax info complete
+[ ] On version 2.0: attach build 14+ (new upload)
+[ ] On version 2.0: add all 3 IAPs (2 subscriptions + lifetime)
+[ ] Submit app version AND subscriptions together

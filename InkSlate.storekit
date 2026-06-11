@@ -61,7 +61,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.lucas.InkSlateNew.pro.monthly",
+          "productID" : "com.lucas.InkSlateNew.pro.sub.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "InkSlate Pro Monthly",
           "subscriptionGroupID" : "inkslate_pro",
@@ -93,7 +93,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.lucas.InkSlateNew.pro.yearly",
+          "productID" : "com.lucas.InkSlateNew.pro.sub.yearly",
           "recurringSubscriptionPeriod" : "P1Y",
           "referenceName" : "InkSlate Pro Yearly",
           "subscriptionGroupID" : "inkslate_pro",
