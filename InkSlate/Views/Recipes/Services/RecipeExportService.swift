@@ -21,6 +21,9 @@ struct RecipeExportService {
         if let servings = recipe.servings {
             text += "Servings: \(servings)\n"
         }
+        if let videoURL = recipe.videoURL, !videoURL.isEmpty {
+            text += "Video: \(videoURL)\n"
+        }
         text += "\n"
         
         let ingredients = recipe.ingredientsArray

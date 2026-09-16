@@ -3,6 +3,27 @@ import CoreData
 import os.log
 
 
+// MARK: - Video / media links (TikTok, YouTube, etc.)
+enum MediaLink {
+    /// Trims and adds `https://` when the scheme is missing. Returns nil for empty input.
+    static func storedString(from raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains("://") { return trimmed }
+        return "https://\(trimmed)"
+    }
+    
+    static func url(from raw: String?) -> URL? {
+        guard let stored = storedString(from: raw ?? "") else { return nil }
+        return URL(string: stored)
+    }
+    
+    static func displayHost(from raw: String?) -> String? {
+        guard let url = url(from: raw) else { return nil }
+        return url.host?.replacingOccurrences(of: "www.", with: "") ?? url.absoluteString
+    }
+}
+
 // MARK: - Notes Extensions
 extension Notes {
     var isMarkedAsDeleted: Bool {

@@ -40,7 +40,7 @@ struct AddSubcategoryView: View {
     ]
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -119,9 +119,10 @@ struct AddSubcategoryView: View {
                     .disabled(!canSave)
                     .padding(.top, DesignSystem.Spacing.sm)
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(DesignSystem.Spacing.lg)
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("New Subcategory")
             .inlineNavigationTitle()
             .toolbar {
@@ -210,7 +211,7 @@ struct SubcategoryManagementView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 ForEach(subcategories, id: \.objectID) { subcategory in
                     SubcategoryManagementRow(
@@ -246,7 +247,7 @@ struct SubcategoryManagementView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("Manage Subcategories")
             .inlineNavigationTitle()
             .toolbar {
@@ -272,9 +273,9 @@ struct SubcategoryManagementView: View {
                     }
                 }
             }
-            .sheet(item: $editSubcategorySheet) { subcategory in
+            .inkSlateSheet(item: $editSubcategorySheet) { subcategory in
                 EditSubcategoryView(subcategory: subcategory)
-                    .presentationDetents([.large])
+                    .inkSlateSheetDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }

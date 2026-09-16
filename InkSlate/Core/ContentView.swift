@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreData
 
 // MARK: - Main Content View
 struct ContentView: View {
@@ -14,23 +15,36 @@ struct ContentView: View {
     @State private var isShowingPaywall = false
     @State private var paywallHighlight: MenuViewType?
 
+    #if os(macOS)
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+  #endif
+
+    #if os(macOS)
+    init(columnVisibility: Binding<NavigationSplitViewVisibility> = .constant(.automatic)) {
+        _columnVisibility = columnVisibility
+    }
+    #endif
+
     var body: some View {
-        ZStack {
-            NavigationStack {
-                VStack(spacing: 0) {
-                    SyncBackupWarningBanner(persistence: persistence)
-                    MainContentView(
-                        selectedView: selectedView,
-                        onRequestUpgrade: { feature in
-                            presentPaywall(for: feature)
-                        }
-                    )
-                }
-                .id(selectedView)
-            }
-            .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
-            .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
-            
+        #if os(macOS)
+        macBody
+        #else
+        iosBody
+        #endif
+    }
+
+    #if os(macOS)
+    private var macBody: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            MacSidebarView(
+                selectedView: $selectedView,
+                onSelectMenu: selectMenu
+            )
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+        } detail: {
+            macDetailContent
+        }
+        .overlay {
             if sharedStateManager.showSplashScreen {
                 SplashScreenView {
                     sharedStateManager.hideSplashScreen()
@@ -38,57 +52,112 @@ struct ContentView: View {
                 }
                 .transition(.opacity)
             }
-            
+        }
+        .modifier(SharedContentModifiers(
+            sharedStateManager: sharedStateManager,
+            subscription: subscription,
+            hasCompletedOnboarding: $hasCompletedOnboarding,
+            isShowingOnboarding: $isShowingOnboarding,
+            isShowingPaywall: $isShowingPaywall,
+            paywallHighlight: $paywallHighlight,
+            viewContext: viewContext,
+            onAppearSetup: onAppearSetup,
+            onPendingMenuChange: { menu in
+                applyMenuSelection(menu)
+                sharedStateManager.pendingMenuSelection = nil
+            },
+            onProChange: { isPro in
+                if isPro { isShowingPaywall = false }
+            },
+            confirmRemoteReset: confirmRemoteReset,
+            dismissRemoteReset: dismissRemoteReset
+        ))
+    }
+
+    private var macDetailContent: some View {
+        // Keep the outer stack stable; remount only the feature so menu swaps stay fast
+        // and features with their own stacks (Mind Maps, Places, Notes, …) drop pushed detail.
+        NavigationStack {
+            VStack(spacing: 0) {
+                SyncBackupWarningBanner(persistence: persistence)
+                MainContentView(
+                    selectedView: selectedView,
+                    onRequestUpgrade: { presentPaywall(for: $0) }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(selectedView)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
+        .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
+    }
+    #endif
+
+    #if os(iOS)
+    private var iosBody: some View {
+        ZStack {
+            // Keep the outer stack stable; remount only the feature so menu swaps stay fast
+            // and features with their own stacks drop any pushed detail.
+            NavigationStack {
+                VStack(spacing: 0) {
+                    SyncBackupWarningBanner(persistence: persistence)
+                    MainContentView(
+                        selectedView: selectedView,
+                        onRequestUpgrade: { presentPaywall(for: $0) }
+                    )
+                    .id(selectedView)
+                }
+            }
+            .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
+            .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
+
+            if sharedStateManager.showSplashScreen {
+                SplashScreenView {
+                    sharedStateManager.hideSplashScreen()
+                    presentOnboardingIfNeeded()
+                }
+                .transition(.opacity)
+            }
+
             FloatingRadialLauncher(
                 isMenuOpen: $sharedStateManager.isMenuOpen,
                 selectedView: $selectedView,
-                onSelectMenu: { menu in
-                    selectMenu(menu)
-                }
+                onSelectMenu: { selectMenu($0) }
             )
         }
-        .onAppear {
-            if !hasAppliedInitialMainSection {
-                hasAppliedInitialMainSection = true
-                selectedView = .items
-            }
-            if let menu = sharedStateManager.pendingMenuSelection {
+        .modifier(SharedContentModifiers(
+            sharedStateManager: sharedStateManager,
+            subscription: subscription,
+            hasCompletedOnboarding: $hasCompletedOnboarding,
+            isShowingOnboarding: $isShowingOnboarding,
+            isShowingPaywall: $isShowingPaywall,
+            paywallHighlight: $paywallHighlight,
+            viewContext: viewContext,
+            onAppearSetup: onAppearSetup,
+            onPendingMenuChange: { menu in
                 applyMenuSelection(menu)
                 sharedStateManager.pendingMenuSelection = nil
-            }
+            },
+            onProChange: { isPro in
+                if isPro { isShowingPaywall = false }
+            },
+            confirmRemoteReset: confirmRemoteReset,
+            dismissRemoteReset: dismissRemoteReset
+        ))
+    }
+    #endif
+
+    private func onAppearSetup() {
+        if !hasAppliedInitialMainSection {
+            hasAppliedInitialMainSection = true
+            selectedView = .items
         }
-        .fullScreenCoverIfAvailable(isPresented: $isShowingOnboarding) {
-            OnboardingView {
-                hasCompletedOnboarding = true
-                isShowingOnboarding = false
-            }
-            .interactiveDismissDisabled(true)
-        }
-        .fullScreenCoverIfAvailable(isPresented: $isShowingPaywall) {
-            PaywallView(highlightFeature: paywallHighlight)
-                .environmentObject(subscription)
-                .environmentObject(ThemeService.shared)
-        }
-        .onChange(of: sharedStateManager.pendingMenuSelection) { _, newValue in
-            guard let menu = newValue else { return }
+        if let menu = sharedStateManager.pendingMenuSelection {
             applyMenuSelection(menu)
             sharedStateManager.pendingMenuSelection = nil
         }
-        .onChange(of: subscription.isPro) { _, isPro in
-            if isPro {
-                isShowingPaywall = false
-            }
-        }
-        .alert("Erase this device?", isPresented: Binding(
-            get: { sharedStateManager.pendingRemoteResetToken != nil },
-            set: { if !$0 { sharedStateManager.pendingRemoteResetToken = nil } }
-        )) {
-            Button("Erase This Device", role: .destructive) { confirmRemoteReset() }
-            Button("Not Now", role: .cancel) { dismissRemoteReset() }
-        } message: {
-            Text("InkSlate was factory reset on another one of your devices. Do you also want to permanently erase all InkSlate data on this device? This cannot be undone.")
-        }
-        .withErrorHandling()
     }
 
     private func selectMenu(_ menu: MenuViewType) {
@@ -141,6 +210,179 @@ struct ContentView: View {
     }
 }
 
+#if os(macOS)
+private struct MacSidebarView: View {
+    @Binding var selectedView: MenuViewType
+    var onSelectMenu: (MenuViewType) -> Void
+    @EnvironmentObject private var subscription: SubscriptionService
+    @EnvironmentObject private var themeService: ThemeService
+    @State private var menuItems: [MenuViewType] = []
+    @State private var hiddenItems: Set<MenuViewType> = []
+
+    private let userDefaults = UserDefaults.standard
+    private let cloudStore = NSUbiquitousKeyValueStore.default
+    private let menuOrderKey = "MenuOrder"
+    private let hiddenMenuItemsKey = "HiddenMenuItems"
+
+    private var mainSidebarItems: [MenuViewType] {
+        MenuViewType.sidebarItems(
+            from: menuItems,
+            hidden: hiddenItems,
+            pinHomeToTop: true,
+            pinBottomItems: [.profile, .settings],
+            includePinnedBottom: false
+        )
+    }
+
+    private var footerSidebarItems: [MenuViewType] {
+        [.profile, .settings].filter { !hiddenItems.contains($0) }
+    }
+
+    var body: some View {
+        List(selection: $selectedView) {
+            Section("InkSlate") {
+                ForEach(mainSidebarItems, id: \.self) { menu in
+                    sidebarRow(for: menu)
+                }
+            }
+            if !footerSidebarItems.isEmpty {
+                Section {
+                    ForEach(footerSidebarItems, id: \.self) { menu in
+                        sidebarRow(for: menu)
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("InkSlate")
+        .tint(themeService.accentColor)
+        .onAppear {
+            loadMenuConfiguration()
+        }
+        .onReceive(
+            NotificationCenter.default
+                .publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)
+                .filter { ($0.object as? NSUbiquitousKeyValueStore) === cloudStore }
+                .receive(on: DispatchQueue.main)
+        ) { _ in
+            loadMenuConfiguration()
+        }
+        .onChange(of: selectedView) { _, newValue in
+            onSelectMenu(newValue)
+        }
+    }
+
+    @ViewBuilder
+    private func sidebarRow(for menu: MenuViewType) -> some View {
+        Label {
+            HStack {
+                Text(menu.menuTitle)
+                Spacer()
+                if menu.requiresPro && !subscription.isPro {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } icon: {
+            Image(systemName: menu.icon)
+        }
+        .tag(menu)
+    }
+
+    private func loadMenuConfiguration() {
+        let menuOrder: [String]?
+        if let cloudOrder = cloudStore.array(forKey: menuOrderKey) as? [String], !cloudOrder.isEmpty {
+            menuOrder = cloudOrder
+        } else if let localOrder = userDefaults.array(forKey: menuOrderKey) as? [String], !localOrder.isEmpty {
+            menuOrder = localOrder
+            cloudStore.set(localOrder, forKey: menuOrderKey)
+            cloudStore.synchronize()
+        } else {
+            menuOrder = nil
+        }
+
+        if let savedOrder = menuOrder {
+            let orderedItems = savedOrder.compactMap { MenuViewType(rawValue: $0) }
+            menuItems = orderedItems.isEmpty ? MenuViewType.allCases : orderedItems
+        } else {
+            menuItems = MenuViewType.allCases
+        }
+
+        let hiddenItemsData: [String]?
+        if let cloudHidden = cloudStore.array(forKey: hiddenMenuItemsKey) as? [String], !cloudHidden.isEmpty {
+            hiddenItemsData = cloudHidden
+        } else if let localHidden = userDefaults.array(forKey: hiddenMenuItemsKey) as? [String], !localHidden.isEmpty {
+            hiddenItemsData = localHidden
+            cloudStore.set(localHidden, forKey: hiddenMenuItemsKey)
+            cloudStore.synchronize()
+        } else {
+            hiddenItemsData = nil
+        }
+
+        if let hiddenData = hiddenItemsData {
+            hiddenItems = Set(hiddenData.compactMap { MenuViewType(rawValue: $0) })
+        } else {
+            hiddenItems = []
+        }
+    }
+}
+#endif
+
+private struct SharedContentModifiers: ViewModifier {
+    @ObservedObject var sharedStateManager: SharedStateManager
+    @ObservedObject var subscription: SubscriptionService
+    @Binding var hasCompletedOnboarding: Bool
+    @Binding var isShowingOnboarding: Bool
+    @Binding var isShowingPaywall: Bool
+    @Binding var paywallHighlight: MenuViewType?
+    var viewContext: NSManagedObjectContext
+    var onAppearSetup: () -> Void
+    var onPendingMenuChange: (MenuViewType) -> Void
+    var onProChange: (Bool) -> Void
+    var confirmRemoteReset: () -> Void
+    var dismissRemoteReset: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear(perform: onAppearSetup)
+            .fullScreenCoverIfAvailable(isPresented: $isShowingOnboarding) {
+                OnboardingView {
+                    hasCompletedOnboarding = true
+                    isShowingOnboarding = false
+                }
+                .interactiveDismissDisabled(true)
+            }
+            .fullScreenCoverIfAvailable(isPresented: $isShowingPaywall) {
+                PaywallView(highlightFeature: paywallHighlight)
+                    .environmentObject(subscription)
+                    .environmentObject(ThemeService.shared)
+            }
+            .onChange(of: sharedStateManager.pendingMenuSelection) { _, newValue in
+                guard let menu = newValue else { return }
+                onPendingMenuChange(menu)
+            }
+            .onChange(of: subscription.isPro) { _, isPro in
+                onProChange(isPro)
+            }
+            .alert("Erase this device?", isPresented: Binding(
+                get: { sharedStateManager.pendingRemoteResetToken != nil },
+                set: { if !$0 { sharedStateManager.pendingRemoteResetToken = nil } }
+            )) {
+                Button("Erase This Device", role: .destructive) { confirmRemoteReset() }
+                Button("Not Now", role: .cancel) { dismissRemoteReset() }
+            } message: {
+                Text("InkSlate was factory reset on another one of your devices. Do you also want to permanently erase all InkSlate data on this device? This cannot be undone.")
+            }
+            .withErrorHandling()
+            #if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: .inkSlateOpenSettings)) { _ in
+                paywallHighlight = nil
+            }
+            #endif
+    }
+}
+
 // MARK: - Main Content Container
 struct MainContentView: View {
     let selectedView: MenuViewType
@@ -149,13 +391,17 @@ struct MainContentView: View {
     @EnvironmentObject private var subscription: SubscriptionService
 
     var body: some View {
-        if selectedView.requiresPro && !subscription.isPro {
-            ProLockedFeatureView(feature: selectedView) {
-                onRequestUpgrade(selectedView)
+        Group {
+            if selectedView.requiresPro && !subscription.isPro {
+                ProLockedFeatureView(feature: selectedView) {
+                    onRequestUpgrade(selectedView)
+                }
+            } else {
+                moduleContent
             }
-        } else {
-            moduleContent
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.2), value: subscription.isPro)
     }
 
     @ViewBuilder

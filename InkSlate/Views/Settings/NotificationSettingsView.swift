@@ -1,6 +1,11 @@
 import SwiftUI
 import UserNotifications
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct NotificationSettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -24,6 +29,8 @@ struct NotificationSettingsView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(DesignSystem.Colors.background.ignoresSafeArea())
+            #else
+            .inkSlateMacListLayout()
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -34,14 +41,12 @@ struct NotificationSettingsView: View {
                 await refreshAuthorizationStatus()
                 await InkSlateNotificationService.shared.refreshRepeatingNotificationsFromDefaultsIfAuthorized()
             }
-            #if canImport(UIKit)
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: PlatformLifecycle.willEnterForeground)) { _ in
                 Task {
                     await refreshAuthorizationStatus()
                     await InkSlateNotificationService.shared.refreshRepeatingNotificationsFromDefaultsIfAuthorized()
                 }
             }
-            #endif
             .onChange(of: journalEnabled) { _, on in
                 Task { await handleJournalToggle(on) }
             }
@@ -83,14 +88,24 @@ struct NotificationSettingsView: View {
                 }
             } else if authorizationStatus == .denied {
                 Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        openURL(url)
-                    }
+                    openSystemNotificationSettings()
                 }
             }
         } footer: {
             Text("Journal uses a daily time you pick. Capture nudge is once per day at a random time while InkSlate is installed; the next day is scheduled when you open the app. Cook timers can alert when the app is in the background.")
         }
+    }
+
+    private func openSystemNotificationSettings() {
+        #if canImport(UIKit)
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            openURL(url)
+        }
+        #elseif canImport(AppKit)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+            NSWorkspace.shared.open(url)
+        }
+        #endif
     }
 
     private var cookTimersSection: some View {
@@ -101,98 +116,94 @@ struct NotificationSettingsView: View {
     }
 
     private var journalSection: some View {
-        Section("Daily journal") {
-            Toggle("Reminder", isOn: $journalEnabled)
+        Section {
+            Toggle("Daily journal reminder", isOn: $journalEnabled)
                 .tint(DesignSystem.Colors.accent)
-            DatePicker(
-                "Time",
-                selection: journalTimeBinding,
-                displayedComponents: .hourAndMinute
-            )
-            .disabled(!journalEnabled)
+            if journalEnabled {
+                DatePicker(
+                    "Reminder time",
+                    selection: journalTimeBinding,
+                    displayedComponents: .hourAndMinute
+                )
+            }
+        } header: {
+            Text("Journal")
         }
     }
 
     private var nudgeSection: some View {
         Section {
-            Toggle("Reminder", isOn: $nudgeEnabled)
+            Toggle("Capture nudge", isOn: $nudgeEnabled)
                 .tint(DesignSystem.Colors.accent)
-        } header: {
-            Text("Capture nudge")
         } footer: {
-            Text("About once per day at a random time between 9:00 and 21:00. After you see a nudge, the next one is planned the next time you open InkSlate.")
-        }
-    }
-
-    private var statusLabel: String {
-        switch authorizationStatus {
-        case .authorized: return "Allowed"
-        case .denied: return "Off in Settings"
-        case .notDetermined: return "Not asked"
-        case .provisional: return "Provisional"
-        case .ephemeral: return "Ephemeral"
-        @unknown default: return "Unknown"
+            Text("A gentle once-per-day reminder to capture a thought in Notes.")
         }
     }
 
     private var journalTimeBinding: Binding<Date> {
         Binding(
-            get: { Self.dateFrom(hour: journalHour, minute: journalMinute) },
+            get: {
+                var components = DateComponents()
+                components.hour = journalHour
+                components.minute = journalMinute
+                return Calendar.current.date(from: components) ?? Date()
+            },
             set: { newDate in
-                let parts = Calendar.current.dateComponents([.hour, .minute], from: newDate)
-                journalHour = parts.hour ?? 0
-                journalMinute = parts.minute ?? 0
+                let components = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                journalHour = components.hour ?? 20
+                journalMinute = components.minute ?? 0
             }
         )
     }
 
-    private static func dateFrom(hour: Int, minute: Int) -> Date {
-        var c = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-        c.hour = hour
-        c.minute = minute
-        return Calendar.current.date(from: c) ?? Date()
+    private var statusLabel: String {
+        switch authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return "Allowed"
+        case .denied: return "Denied"
+        case .notDetermined: return "Not set"
+        @unknown default: return "Unknown"
+        }
     }
 
     private func refreshAuthorizationStatus() async {
-        authorizationStatus = await InkSlateNotificationService.shared.authorizationStatus()
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        await MainActor.run {
+            authorizationStatus = settings.authorizationStatus
+        }
     }
 
-    private func handleJournalToggle(_ on: Bool) async {
-        if on {
-            let ok = await InkSlateNotificationService.shared.requestAuthorization()
+    private func handleJournalToggle(_ enabled: Bool) async {
+        if enabled {
+            let granted = await InkSlateNotificationService.shared.requestAuthorization()
             await refreshAuthorizationStatus()
-            if !ok {
+            guard granted else {
                 await MainActor.run { journalEnabled = false }
                 return
             }
         }
-        await InkSlateNotificationService.shared.scheduleJournalAndNudgeFromDefaults()
+        await rescheduleRepeatingIfAllowed()
     }
 
-    private func handleNudgeToggle(_ on: Bool) async {
-        if on {
-            let ok = await InkSlateNotificationService.shared.requestAuthorization()
+    private func handleNudgeToggle(_ enabled: Bool) async {
+        if enabled {
+            let granted = await InkSlateNotificationService.shared.requestAuthorization()
             await refreshAuthorizationStatus()
-            if !ok {
+            guard granted else {
                 await MainActor.run { nudgeEnabled = false }
                 return
             }
         }
-        await InkSlateNotificationService.shared.scheduleJournalAndNudgeFromDefaults()
+        await InkSlateNotificationService.shared.refreshRepeatingNotificationsFromDefaultsIfAuthorized()
     }
 
-    private func handleCookTimerToggle(_ on: Bool) async {
-        if on {
+    private func handleCookTimerToggle(_ enabled: Bool) async {
+        if enabled {
             _ = await InkSlateNotificationService.shared.requestAuthorization()
             await refreshAuthorizationStatus()
-        } else {
-            await InkSlateNotificationService.shared.cancelAllCookTimerNotifications()
         }
     }
 
     private func rescheduleRepeatingIfAllowed() async {
-        let status = await InkSlateNotificationService.shared.authorizationStatus()
-        guard status == .authorized || status == .provisional else { return }
-        await InkSlateNotificationService.shared.scheduleJournalAndNudgeFromDefaults()
+        await InkSlateNotificationService.shared.refreshRepeatingNotificationsFromDefaultsIfAuthorized()
     }
 }

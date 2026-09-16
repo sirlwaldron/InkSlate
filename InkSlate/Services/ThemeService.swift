@@ -30,6 +30,8 @@ class ThemeService: ObservableObject {
         case green
         case purple
         case orange
+        case pink
+        case yellow
 
         var id: String { rawValue }
 
@@ -40,6 +42,8 @@ class ThemeService: ObservableObject {
             case .green: return "Forest"
             case .purple: return "Violet"
             case .orange: return "Sunset"
+            case .pink: return "Blush"
+            case .yellow: return "Sunshine"
             }
         }
 
@@ -60,6 +64,12 @@ class ThemeService: ObservableObject {
             case .orange:
                 return Color(light: Color(red: 0.95, green: 0.49, blue: 0.12),
                                dark: Color(red: 1.00, green: 0.70, blue: 0.38))
+            case .pink:
+                return Color(light: Color(red: 0.92, green: 0.30, blue: 0.55),
+                               dark: Color(red: 1.00, green: 0.55, blue: 0.75))
+            case .yellow:
+                return Color(light: Color(red: 0.90, green: 0.70, blue: 0.08),
+                               dark: Color(red: 1.00, green: 0.86, blue: 0.30))
             }
         }
     }
@@ -178,7 +188,7 @@ struct ThemeSettingsView: View {
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("Appearance") {
                     Toggle("Dark Mode", isOn: Binding(
@@ -190,7 +200,11 @@ struct ThemeSettingsView: View {
                         Text("Accent Color")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 12) {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 44), spacing: 12)],
+                            alignment: .leading,
+                            spacing: 12
+                        ) {
                             ForEach(ThemeService.AccentTheme.allCases) { theme in
                                 let isCurrent = themeService.accentTheme == theme
                                 Button {
@@ -261,7 +275,7 @@ struct ThemeSettingsView: View {
             }
             .navigationTitle("Theme Settings")
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             #endif
             .tint(themeService.accentColor)
             .toolbar {
@@ -271,6 +285,7 @@ struct ThemeSettingsView: View {
                     }
                 }
             }
+            .inkSlateFormContainer()
         }
     }
 }

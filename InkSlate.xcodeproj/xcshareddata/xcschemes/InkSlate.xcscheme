@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2640"
+   LastUpgradeVersion = "2650"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -18,6 +18,20 @@
                BlueprintIdentifier = "2F1AC03A2E8EE8CC00115C4A"
                BuildableName = "InkSlate.app"
                BlueprintName = "InkSlate"
+               ReferencedContainer = "container:InkSlate.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "NO"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "2F5B00042E90000100115C4A"
+               BuildableName = "InkSlateShareExtension.appex"
+               BlueprintName = "InkSlateShareExtension"
                ReferencedContainer = "container:InkSlate.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>

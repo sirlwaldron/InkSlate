@@ -5,15 +5,17 @@ import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+import CoreText
+#endif
 
 // MARK: - Sharing Service
 class SharingService: ObservableObject {
     static let shared = SharingService()
-    
+
     private init() {}
-    
-    // MARK: - Share Note (iOS: from view controller; macOS: items only, use ShareSheet)
-    
+
     #if canImport(UIKit)
     func shareNote(_ note: Notes, from view: UIViewController) {
         let activityViewController = UIActivityViewController(
@@ -28,9 +30,7 @@ class SharingService: ObservableObject {
         view.present(activityViewController, animated: true)
     }
     #endif
-    
-    // MARK: - Export as HTML
-    
+
     func exportAsHTML(_ note: Notes) -> String {
         let titleEsc = escapingHTML(note.title ?? "Untitled Note")
         let html = """
@@ -55,18 +55,14 @@ class SharingService: ObservableObject {
         </body>
         </html>
         """
-        
+
         return html
     }
-    
-    // MARK: - Export as Markdown
-    
+
     func exportAsMarkdown(_ note: Notes) -> String {
         return "# \(note.title ?? "")\n\n\(note.content ?? "")"
     }
-    
-    // MARK: - Export as PDF (iOS only; macOS returns nil)
-    
+
     func exportAsPDF(_ note: Notes) -> Data? {
         #if canImport(UIKit)
         let html = exportAsHTML(note)
@@ -83,29 +79,52 @@ class SharingService: ObservableObject {
         renderer.drawPage(at: 0, in: UIGraphicsGetPDFContextBounds())
         UIGraphicsEndPDFContext()
         return pdfData as Data
+        #elseif canImport(AppKit)
+        let html = exportAsHTML(note)
+        let attributed = NSAttributedString(
+            html: Data(html.utf8),
+            options: [
+                .documentType: NSAttributedString.DocumentType.html,
+                .characterEncoding: String.Encoding.utf8.rawValue
+            ],
+            documentAttributes: nil
+        ) ?? NSAttributedString(string: note.content ?? "")
+        let pdfData = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let consumer = CGDataConsumer(data: pdfData as CFMutableData),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            return nil
+        }
+        context.beginPDFPage(nil)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
+        let path = CGPath(rect: mediaBox.insetBy(dx: 36, dy: 36), transform: nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: attributed.length), path, nil)
+        CTFrameDraw(frame, context)
+        context.endPDFPage()
+        context.closePDF()
+        return pdfData as Data
         #else
         return nil
         #endif
     }
-    
-    #if canImport(UIKit)
+
     func exportPDFToTemporaryFile(_ note: Notes) -> URL? {
         guard let data = exportAsPDF(note) else { return nil }
-        
+
         let safeTitle = (note.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? (note.title ?? "Note")
             : "Note"
-        
+
         let fileName = safeTitle
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: "\n", with: " ")
             .prefix(80)
-        
+
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(String(fileName))
             .appendingPathExtension("pdf")
-        
+
         do {
             try data.write(to: url, options: [.atomic])
             return url
@@ -113,9 +132,6 @@ class SharingService: ObservableObject {
             return nil
         }
     }
-    #endif
-    
-    // MARK: - Private Methods
 
     private func escapingHTML(_ s: String) -> String {
         s.replacingOccurrences(of: "&", with: "&amp;")
@@ -123,40 +139,88 @@ class SharingService: ObservableObject {
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
     }
-    
+
     private func markdownToHTML(_ markdown: String) -> String {
         var html = escapingHTML(markdown)
-        
+
         html = html.replacingOccurrences(of: "^# (.+)$", with: "<h1>$1</h1>", options: .regularExpression)
         html = html.replacingOccurrences(of: "^## (.+)$", with: "<h2>$1</h2>", options: .regularExpression)
         html = html.replacingOccurrences(of: "^### (.+)$", with: "<h3>$1</h3>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "\\*\\*(.+?)\\*\\*", with: "<strong>$1</strong>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "\\*(.+?)\\*", with: "<em>$1</em>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "```([\\s\\S]*?)```", with: "<pre><code>$1</code></pre>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "\\[([^\\]]+)\\]\\(([^\\)]+)\\)", with: "<a href=\"$2\">$1</a>", options: .regularExpression)
-        
         html = html.replacingOccurrences(of: "\n", with: "<br>")
-        
+
         return html
     }
 }
 
-// MARK: - Share Sheet (UIKit)
 #if canImport(UIKit)
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
-    
+
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
-    
+
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+#endif
+
+struct PlatformShareSheet: View {
+    let items: [Any]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        #if canImport(UIKit)
+        ShareSheet(items: items)
+        #elseif canImport(AppKit)
+        MacShareSheetRepresentable(items: shareableItems)
+            .frame(width: 1, height: 1)
+            .onAppear {
+                DispatchQueue.main.async {
+                    presentMacSharePicker()
+                }
+            }
+        #else
+        EmptyView()
+        #endif
+    }
+
+    #if canImport(AppKit)
+    private var shareableItems: [Any] {
+        items.map { item in
+            if let url = item as? URL { return url as Any }
+            if let string = item as? String { return string as Any }
+            return item
+        }
+    }
+
+    private func presentMacSharePicker() {
+        guard let view = NSApp.keyWindow?.contentView else {
+            dismiss()
+            return
+        }
+        let picker = NSSharingServicePicker(items: shareableItems)
+        picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            dismiss()
+        }
+    }
+    #endif
+}
+
+#if canImport(AppKit)
+private struct MacShareSheetRepresentable: NSViewRepresentable {
+    let items: [Any]
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 #endif
 
@@ -167,16 +231,16 @@ struct ExportOptionsView: View {
     @State private var showingShareSheet = false
     @State private var shareItems: [Any] = []
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 20) {
                 Text("Export Note")
                     .font(.headline)
-                
+
                 Text("Choose how you want to export this note.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
-                
+
                 VStack(spacing: 16) {
                     Button("Share as Text") {
                         shareItems = [note.content ?? ""]
@@ -184,7 +248,7 @@ struct ExportOptionsView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                    
+
                     Button("Export as HTML") {
                         let html = SharingService.shared.exportAsHTML(note)
                         shareItems = [html]
@@ -192,7 +256,7 @@ struct ExportOptionsView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                    
+
                     Button("Export as Markdown") {
                         let markdown = SharingService.shared.exportAsMarkdown(note)
                         shareItems = [markdown]
@@ -200,8 +264,7 @@ struct ExportOptionsView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                    
-                    #if canImport(UIKit)
+
                     Button("Export as PDF") {
                         if let pdfURL = SharingService.shared.exportPDFToTemporaryFile(note) {
                             shareItems = [pdfURL]
@@ -210,15 +273,14 @@ struct ExportOptionsView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                    #endif
                 }
-                
+
                 Spacer()
             }
             .padding()
             .navigationTitle("Export")
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -227,11 +289,9 @@ struct ExportOptionsView: View {
                     }
                 }
             }
-            #if canImport(UIKit)
-            .sheet(isPresented: $showingShareSheet) {
-                ShareSheet(items: shareItems)
+            .inkSlateSheet(isPresented: $showingShareSheet) {
+                PlatformShareSheet(items: shareItems)
             }
-            #endif
         }
     }
 }

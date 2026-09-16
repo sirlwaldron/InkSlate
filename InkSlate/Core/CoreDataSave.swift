@@ -20,6 +20,8 @@ enum CoreDataSave {
         }
         do {
             try context.save()
+            NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
+            NSUbiquitousKeyValueStore.default.synchronize()
             return true
         } catch {
             ErrorHandlingService.shared.reportSaveFailure(error, module: module, retry: retry)

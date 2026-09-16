@@ -2,6 +2,7 @@
 import UIKit
 #endif
 import Foundation
+import CoreData
 
 
 enum RecipeImageStoreError: LocalizedError {
@@ -47,7 +48,7 @@ final class RecipeImageStore {
         
         let directoryURL = try imagesDirectoryURL()
         
-        if let path = existingPath, !path.isEmpty {
+        if let path = existingPath, !path.isEmpty, !isCloudRecordName(path), !path.hasPrefix("http") {
             deleteImage(at: path)
         }
         
@@ -56,10 +57,12 @@ final class RecipeImageStore {
         
         do {
             try data.write(to: fileURL, options: .atomic)
+            #if os(iOS)
             try? FileManager.default.setAttributes(
-                [FileAttributeKey.protectionKey: FileProtectionType.complete],
+                [FileAttributeKey.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: fileURL.path
             )
+            #endif
             
             if let image = platformImage(from: data) {
                 cacheQueue.async(flags: .barrier) {
@@ -70,6 +73,61 @@ final class RecipeImageStore {
             return fileName
         } catch {
             throw RecipeImageStoreError.saveFailed(error)
+        }
+    }
+
+    /// Compresses picker/camera data into a JPEG that fits CloudKit + validation limits.
+    static func normalizedJPEGData(from data: Data, maxBytes: Int = Int(RecipeConstants.maxImageSize)) -> Data? {
+        guard let image = platformImage(from: data) else { return nil }
+        return normalizedJPEGData(from: image, maxBytes: maxBytes)
+    }
+
+    static func normalizedJPEGData(from image: PlatformImage, maxBytes: Int = Int(RecipeConstants.maxImageSize)) -> Data? {
+        if let fitted = image.inkSlateJPEGDataFitting(maxBytes: min(maxBytes, 5 * 1024 * 1024)) {
+            return fitted
+        }
+        return image.jpegData(compressionQuality: 0.7)
+    }
+
+    /// Uploads any recipe covers still stored only as local files so they sync across devices.
+    @MainActor
+    static func migrateLocalPhotosToCloudKit(in context: NSManagedObjectContext) async {
+        let request = Recipe.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "imageUrl != nil AND imageUrl != '' AND NOT (imageUrl BEGINSWITH %@) AND NOT (imageUrl BEGINSWITH %@)",
+            "RecipePhoto-",
+            "http"
+        )
+        guard let recipes = try? context.fetch(request), !recipes.isEmpty else { return }
+
+        var didChange = false
+        var localPathsToDelete: [String] = []
+        for recipe in recipes {
+            guard let recipeID = recipe.id,
+                  let path = recipe.imageUrl,
+                  !path.isEmpty,
+                  let image = await loadImage(path: path)
+            else { continue }
+
+            do {
+                let recordName = try await CloudKitAssetService.shared.uploadRecipePhoto(image, for: recipeID)
+                recipe.imageUrl = recordName
+                RecipeImageStore.cacheSyncedImage(image, recordName: recordName)
+                // Delete local file only after Core Data save succeeds so a kill mid-migrate
+                // cannot leave imageUrl pointing at a removed path.
+                localPathsToDelete.append(path)
+                didChange = true
+            } catch {
+                // Keep the local file; retry on a later launch / save.
+            }
+        }
+
+        if didChange {
+            if context.inkSlateSave(module: "Recipes") {
+                for path in localPathsToDelete {
+                    deleteImage(at: path)
+                }
+            }
         }
     }
     
@@ -131,14 +189,68 @@ final class RecipeImageStore {
         path.hasPrefix("RecipePhoto-")
     }
 
-    /// Loads a recipe image from local disk or CloudKit (for cross-device sync)
+    /// Loads a recipe image from local disk or CloudKit (for cross-device sync).
+    /// Local-first: memory → disk → CloudKit. CloudKit downloads are persisted so the next open is instant.
     static func loadDisplayImage(path: String?) async -> PlatformImage? {
         guard let path, !path.isEmpty else { return nil }
         if path.hasPrefix("http") { return nil }
-        if isCloudRecordName(path) {
-            return try? await CloudKitAssetService.shared.downloadRecipePhoto(recordName: path)
+
+        if let cached = getCachedImage(key: path) {
+            return cached
         }
+
+        if let disk = await loadImageFromDisk(path: path) {
+            return disk
+        }
+
+        if isCloudRecordName(path) {
+            guard let image = try? await CloudKitAssetService.shared.downloadRecipePhoto(recordName: path) else {
+                return nil
+            }
+            persistDownloadedCloudImage(image, recordName: path)
+            return image
+        }
+
         return await loadImage(path: path)
+    }
+
+    /// Writes a CloudKit photo into Documents/RecipeImages so reopen does not hit the network.
+    static func cacheSyncedImage(_ image: PlatformImage, recordName: String) {
+        persistDownloadedCloudImage(image, recordName: recordName)
+    }
+
+    private static func persistDownloadedCloudImage(_ image: PlatformImage, recordName: String) {
+        cacheQueue.async(flags: .barrier) {
+            updateCache(key: recordName, image: image)
+        }
+        guard let data = normalizedJPEGData(from: image),
+              let directoryURL = try? imagesDirectoryURL() else { return }
+        let fileURL = diskFileURL(for: recordName, in: directoryURL)
+        try? data.write(to: fileURL, options: .atomic)
+    }
+
+    private static func diskFileURL(for path: String, in directoryURL: URL) -> URL {
+        if path.lowercased().hasSuffix(".jpg") || path.lowercased().hasSuffix(".jpeg") || path.lowercased().hasSuffix(".png") {
+            return directoryURL.appendingPathComponent(path, isDirectory: false)
+        }
+        return directoryURL.appendingPathComponent(path + ".jpg", isDirectory: false)
+    }
+
+    private static func loadImageFromDisk(path: String) async -> PlatformImage? {
+        guard let directoryURL = try? imagesDirectoryURL() else { return nil }
+        let candidates = [
+            diskFileURL(for: path, in: directoryURL),
+            directoryURL.appendingPathComponent(path, isDirectory: false)
+        ]
+        return await Task.detached(priority: .userInitiated) {
+            for fileURL in candidates {
+                guard let data = try? Data(contentsOf: fileURL),
+                      let image = platformImage(from: data) else { continue }
+                cacheQueue.async(flags: .barrier) { updateCache(key: path, image: image) }
+                return image
+            }
+            return nil
+        }.value
     }
     
     static func fileURL(path: String?) -> URL? {
@@ -158,9 +270,13 @@ final class RecipeImageStore {
         }
         
         guard let directoryURL = try? imagesDirectoryURL() else { return }
-        let fileURL = directoryURL.appendingPathComponent(path)
-        
-        try? FileManager.default.removeItem(at: fileURL)
+        let candidates = [
+            diskFileURL(for: path, in: directoryURL),
+            directoryURL.appendingPathComponent(path, isDirectory: false)
+        ]
+        for fileURL in candidates {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
     
     // MARK: - Cleanup Orphaned Images

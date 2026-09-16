@@ -58,6 +58,38 @@ extension NSImage {
               let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
     }
+
+    func inkSlateJPEGDataFitting(maxBytes: Int) -> Data? {
+        let qualitySteps: [CGFloat] = [0.82, 0.74, 0.66, 0.58, 0.50, 0.42, 0.36]
+        let scaleSteps: [CGFloat] = [1.0, 0.85, 0.72, 0.60, 0.50, 0.42, 0.35, 0.28]
+        let originalSize = size
+        let maxDimensionCap: CGFloat = 3600
+
+        for scale in scaleSteps {
+            let targetMaxDim = min(maxDimensionCap, max(originalSize.width, originalSize.height) * scale)
+            let resized = Self.inkSlateResize(image: self, maxDimension: targetMaxDim) ?? self
+            for q in qualitySteps {
+                guard let data = resized.jpegData(compressionQuality: q) else { continue }
+                if data.count <= maxBytes { return data }
+            }
+        }
+        let tiny = Self.inkSlateResize(image: self, maxDimension: 1600) ?? self
+        return tiny.jpegData(compressionQuality: 0.30).flatMap { $0.count <= maxBytes ? $0 : nil }
+    }
+
+    private static func inkSlateResize(image: NSImage, maxDimension: CGFloat) -> NSImage? {
+        guard maxDimension.isFinite, maxDimension > 0 else { return nil }
+        let sz = image.size
+        let maxDim = max(sz.width, sz.height)
+        guard maxDim > maxDimension else { return image }
+        let scale = maxDimension / maxDim
+        let newSize = NSSize(width: max(1, floor(sz.width * scale)), height: max(1, floor(sz.height * scale)))
+        let output = NSImage(size: newSize)
+        output.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: newSize), from: .zero, operation: .copy, fraction: 1)
+        output.unlockFocus()
+        return output
+    }
 }
 #endif
 

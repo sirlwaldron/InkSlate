@@ -160,25 +160,30 @@ struct SettingsView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(DesignSystem.Colors.background.ignoresSafeArea())
+        #else
+        .inkSlateMacListLayout()
         #endif
-        .sheet(isPresented: $showingMenuReorder) {
+        .inkSlateSheet(isPresented: $showingMenuReorder) {
             MenuReorderView()
                 .environmentObject(subscription)
         }
-        .sheet(isPresented: $showingProfileCustomization) {
+        .inkSlateSheet(isPresented: $showingProfileCustomization) {
             ProfileCustomizationView(profileService: ProfileService.shared)
         }
-        .sheet(isPresented: $showingThemeSettings) {
+        .inkSlateSheet(isPresented: $showingThemeSettings) {
             ThemeSettingsView()
                 .environmentObject(ThemeService.shared)
+                #if os(iOS)
                 .presentationBackgroundInteraction(.enabled)
+                #endif
         }
-        .sheet(isPresented: $showingNotificationSettings) {
+        .inkSlateSheet(isPresented: $showingNotificationSettings) {
             NavigationStack {
                 NotificationSettingsView()
             }
+            .inkSlateFormContainer()
         }
-        .sheet(isPresented: $showingCloudKitTroubleshooting) {
+        .inkSlateSheet(isPresented: $showingCloudKitTroubleshooting) {
             CloudKitTroubleshootingView()
         }
         .fullScreenCoverIfAvailable(isPresented: $showingPaywall) {
@@ -386,6 +391,9 @@ enum InkSlateUserDefaultsKeys {
         "profileUserName",
         "profileUserIcon",
         "profileUserImage",
+        "homeBackgroundScale",
+        "homeBackgroundOffsetX",
+        "homeBackgroundOffsetY",
         
         "lastQuoteDate",
         "currentQuoteId",
@@ -429,7 +437,7 @@ struct MenuReorderView: View {
     private let hiddenMenuItemsKey = "HiddenMenuItems"
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section {
                     ForEach(menuItems.filter { !hiddenItems.contains($0) }, id: \.self) { item in
@@ -515,6 +523,7 @@ struct MenuReorderView: View {
                     }
                 }
             }
+            .inkSlateFormContainer()
         }
         .onAppear {
             loadMenuConfiguration()

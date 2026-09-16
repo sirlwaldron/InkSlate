@@ -54,7 +54,7 @@ struct CloudKitSyncStatusView: View {
                 .padding(.horizontal, 16)
                 .opacity(colorScheme == .dark ? 0.15 : 0.25)
         }
-        .sheet(isPresented: $showDetails) {
+        .inkSlateSheet(isPresented: $showDetails) {
             CloudKitTroubleshootingView()
         }
     }
@@ -132,7 +132,7 @@ struct SyncBackupWarningBanner: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("iCloud backup unavailable. \(backupDetail)")
-            .sheet(isPresented: $showTroubleshooting) {
+            .inkSlateSheet(isPresented: $showTroubleshooting) {
                 CloudKitTroubleshootingView()
             }
         }

@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import CoreData
 
 // MARK: - Shared State Manager
 @MainActor
@@ -15,6 +16,9 @@ class SharedStateManager: ObservableObject {
     @Published var isMenuOpen = false
 
     @Published var pendingMenuSelection: MenuViewType?
+
+    /// Note imported from the share extension that should be opened in the editor.
+    @Published var pendingOpenNoteID: NSManagedObjectID?
 
     @Published var pendingRemoteResetToken: String?
 
@@ -38,6 +42,7 @@ class SharedStateManager: ObservableObject {
     func resetToDefaults() {
         showSplashScreen = true
         pendingMenuSelection = nil
+        pendingOpenNoteID = nil
         pendingRemoteResetToken = nil
         
         loadingManager.stopLoading()

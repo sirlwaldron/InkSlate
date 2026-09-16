@@ -6,7 +6,7 @@ import UIKit
 
 enum SharedImportManager {
     static let appGroupID = "group.com.lucas.InkSlateNew"
-    private static let pendingPayloadFilename = "pending-share-import.json"
+    private static let pendingPayloadDirectoryName = "pending-share-imports"
 
     struct Payload: Codable {
         var title: String?
@@ -20,6 +20,7 @@ enum SharedImportManager {
             case url
             case file
             case image
+            case rich
         }
         
         var kind: Kind
@@ -41,20 +42,75 @@ enum SharedImportManager {
         importPendingPayload(in: context)
     }
 
+    static func importDroppedText(_ text: String, title: String? = nil, in context: NSManagedObjectContext) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        context.perform {
+            let projectFetch = NSFetchRequest<FSProject>(entityName: "FSProject")
+            projectFetch.fetchLimit = 1
+            projectFetch.predicate = NSPredicate(format: "isDefault == YES")
+            let defaultProject = (try? context.fetch(projectFetch))?.first
+
+            let anyProjectFetch = NSFetchRequest<FSProject>(entityName: "FSProject")
+            anyProjectFetch.fetchLimit = 1
+            let fallbackProject = (try? context.fetch(anyProjectFetch))?.first
+
+            let newNote = Notes(context: context)
+            newNote.id = UUID()
+            newNote.title = (title?.isEmpty == false) ? title! : "Imported"
+            newNote.content = trimmed
+            newNote.project = defaultProject ?? fallbackProject
+            newNote.isMarkedDeleted = false
+            newNote.createdDate = Date()
+            newNote.modifiedDate = Date()
+            let plain = MarkdownSerialization.plainText(from: trimmed)
+            newNote.preview = String(plain.prefix(100))
+            try? context.save()
+        }
+    }
+
+    static func importDroppedFileURL(_ url: URL, in context: NSManagedObjectContext) {
+        guard url.isFileURL else { return }
+        if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+            importDroppedText(text, title: url.deletingPathExtension().lastPathComponent, in: context)
+            return
+        }
+        if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            importDroppedText(text, title: url.deletingPathExtension().lastPathComponent, in: context)
+        }
+    }
+
     static func importPendingPayload(in context: NSManagedObjectContext) {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
             return
         }
 
-        let payloadURL = containerURL.appendingPathComponent(pendingPayloadFilename, isDirectory: false)
-        guard let data = try? Data(contentsOf: payloadURL) else { return }
+        let pendingDir = containerURL.appendingPathComponent(pendingPayloadDirectoryName, isDirectory: true)
         
-        let decoder = JSONDecoder()
-        let payloadV2 = try? decoder.decode(PayloadV2.self, from: data)
-        let payloadV1 = payloadV2 == nil ? (try? decoder.decode(Payload.self, from: data)) : nil
-        guard payloadV2 != nil || payloadV1 != nil else { return }
+        // Backwards compatibility for the old single file
+        let legacyPayloadURL = containerURL.appendingPathComponent("pending-share-import.json", isDirectory: false)
+        var fileURLs: [URL] = []
+        if FileManager.default.fileExists(atPath: legacyPayloadURL.path) {
+            fileURLs.append(legacyPayloadURL)
+        }
+        
+        if let contents = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil) {
+            fileURLs.append(contentsOf: contents.filter { $0.pathExtension == "json" })
+        }
+        
+        guard !fileURLs.isEmpty else { return }
 
         context.perform {
+            let decoder = JSONDecoder()
+            var lastImportedNoteID: NSManagedObjectID?
+            for payloadURL in fileURLs {
+                guard let data = try? Data(contentsOf: payloadURL) else { continue }
+                
+                let payloadV2 = try? decoder.decode(PayloadV2.self, from: data)
+                let payloadV1 = payloadV2 == nil ? (try? decoder.decode(Payload.self, from: data)) : nil
+                guard payloadV2 != nil || payloadV1 != nil else { continue }
+
             let projectFetch = NSFetchRequest<FSProject>(entityName: "FSProject")
             projectFetch.fetchLimit = 1
             projectFetch.predicate = NSPredicate(format: "isDefault == YES")
@@ -79,6 +135,8 @@ enum SharedImportManager {
             newNote.title = (title?.isEmpty == false) ? title! : "Imported"
 
             var contentParts: [String] = []
+            var richSerializedContent: String?
+            var richArchiveFileURLs: [URL] = []
             var attachmentMetas: [[String: String]] = []
             var attachmentFileCandidates: [(attachmentID: UUID, relativePath: String, filename: String, uti: String?, kind: String)] = []
             
@@ -87,6 +145,26 @@ enum SharedImportManager {
                     switch item.kind {
                     case .text:
                         if let text = item.text, !text.isEmpty {
+                            contentParts.append(text)
+                        }
+                    case .rich:
+                        // Rich body archived by the share extension: store it in the
+                        // editor's native attributed format so formatting survives.
+                        var handled = false
+                        if let relativePath = item.relativePath {
+                            let fileURL = containerURL.appendingPathComponent(relativePath, isDirectory: false)
+                            if let data = try? Data(contentsOf: fileURL),
+                               let attributed = (try? NSKeyedUnarchiver.unarchivedObject(
+                                   ofClasses: MarkdownSerialization.allowedUnarchiveClasses,
+                                   from: data
+                               )) as? NSAttributedString,
+                               attributed.length > 0 {
+                                richSerializedContent = MarkdownSerialization.serialize(attributed)
+                                richArchiveFileURLs.append(fileURL)
+                                handled = true
+                            }
+                        }
+                        if !handled, let text = item.text, !text.isEmpty {
                             contentParts.append(text)
                         }
                     case .url:
@@ -116,7 +194,7 @@ enum SharedImportManager {
                 contentParts.append(v1.content)
             }
             
-            newNote.content = contentParts.joined(separator: "\n\n")
+            newNote.content = richSerializedContent ?? contentParts.joined(separator: "\n\n")
             newNote.project = defaultProject ?? fallbackProject
             newNote.isMarkedDeleted = false
             newNote.createdDate = createdAt
@@ -142,19 +220,32 @@ enum SharedImportManager {
                 didSave = false
             }
             if didSave {
-                try? FileManager.default.removeItem(at: payloadURL)
-                
-// Upload any share-import attachments to CloudKit so they sync across devices.
-                if let noteID = newNote.id, !attachmentFileCandidates.isEmpty {
-                    let noteObjectID = newNote.objectID
-                    Task {
-                        await uploadShareImportAttachments(
-                            containerURL: containerURL,
-                            noteObjectID: noteObjectID,
-                            noteID: noteID,
-                            items: attachmentFileCandidates
-                        )
+                    try? FileManager.default.removeItem(at: payloadURL)
+                    for fileURL in richArchiveFileURLs {
+                        try? FileManager.default.removeItem(at: fileURL)
                     }
+                    lastImportedNoteID = newNote.objectID
+                    
+                    // Upload any share-import attachments to CloudKit so they sync across devices.
+                    if let noteID = newNote.id, !attachmentFileCandidates.isEmpty {
+                        let noteObjectID = newNote.objectID
+                        Task {
+                            await uploadShareImportAttachments(
+                                containerURL: containerURL,
+                                noteObjectID: noteObjectID,
+                                noteID: noteID,
+                                items: attachmentFileCandidates
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bring the user straight to the note they just shared.
+            if let noteID = lastImportedNoteID {
+                Task { @MainActor in
+                    SharedStateManager.shared.requestOpenMenu(.notes)
+                    SharedStateManager.shared.pendingOpenNoteID = noteID
                 }
             }
         }

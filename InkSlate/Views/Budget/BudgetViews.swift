@@ -156,14 +156,19 @@ struct BudgetMainView: View {
         .onAppear {
             if !hasRepairedOrphans {
                 budgetManager.repairOrphanBudgetSubcategories(with: viewContext)
+                budgetManager.deduplicateBudgetCategories(with: viewContext)
                 hasRepairedOrphans = true
             }
             if categories.isEmpty {
                 budgetManager.initializeDefaultCategories(with: viewContext)
             }
             budgetManager.cleanupExpiredItems(with: viewContext)
-            if !didEnsureDefaultSubcategories {
-                budgetManager.ensureAllDefaultSubcategoriesExist(categories: Array(categories), with: viewContext)
+            // Re-fetch so categories created above / imported via CloudKit are included
+            // (FetchedResults can lag). Re-run whenever defaults may be missing — the
+            // AppStorage flag alone is sticky across devices and can skip after a bad Reset.
+            let freshCategories = (try? viewContext.fetch(BudgetCategory.fetchRequest())) ?? Array(categories)
+            if !didEnsureDefaultSubcategories || categoriesMayNeedDefaultSubcategories(freshCategories) {
+                budgetManager.ensureAllDefaultSubcategoriesExist(categories: freshCategories, with: viewContext)
                 didEnsureDefaultSubcategories = true
             }
             if !hasBuiltSubcategoryCache {
@@ -179,41 +184,41 @@ struct BudgetMainView: View {
         }
         .navigationBarHiddenIfPossible(true)
         .keyboardDismissToolbar()
-        .sheet(item: $newItem) { item in
+        .inkSlateSheet(item: $newItem) { item in
             BudgetItemDetailView(item: item, budgetManager: budgetManager, isNewItem: true)
         }
-        .sheet(isPresented: $showingCreateCategory) {
+        .inkSlateSheet(isPresented: $showingCreateCategory) {
             CreateCategoryView(budgetManager: budgetManager, viewContext: viewContext)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showingCategoryManagement) {
+        .inkSlateSheet(isPresented: $showingCategoryManagement) {
             CategoryManagementView(budgetManager: budgetManager, viewContext: viewContext)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $selectedItem) { item in
+        .inkSlateSheet(item: $selectedItem) { item in
             BudgetItemDetailView(item: item, budgetManager: budgetManager)
         }
-        .sheet(isPresented: $showingIncomeInput) {
+        .inkSlateSheet(isPresented: $showingIncomeInput) {
             MonthlyIncomeInputView(
                 income: .constant(monthlyIncome),
                 onSave: { saveMonthlyIncome($0) }
             )
         }
-        .sheet(item: $subcategoryManagementCategory) { category in
+        .inkSlateSheet(item: $subcategoryManagementCategory) { category in
             SubcategoryManagementView(category: category)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $addSubcategoryCategory) { category in
+        .inkSlateSheet(item: $addSubcategoryCategory) { category in
             AddSubcategoryView(category: category)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $editCategorySheet) { category in
+        .inkSlateSheet(item: $editCategorySheet) { category in
             EditCategoryView(category: category, budgetManager: budgetManager)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .alert("Delete Category", isPresented: $showingDeleteCategoryConfirmation) {
@@ -434,8 +439,9 @@ struct BudgetMainView: View {
             Button("Reset", role: .destructive) {
                 budgetManager.clearAllBudgetData(with: viewContext)
                 budgetManager.initializeDefaultCategories(with: viewContext)
-                didEnsureDefaultSubcategories = false
-                budgetManager.ensureAllDefaultSubcategoriesExist(categories: Array(categories), with: viewContext)
+                // FetchedResults can still be empty right after create — re-fetch like onAppear.
+                let freshCategories = (try? viewContext.fetch(BudgetCategory.fetchRequest())) ?? []
+                budgetManager.ensureAllDefaultSubcategoriesExist(categories: freshCategories, with: viewContext)
                 didEnsureDefaultSubcategories = true
                 rebuildSubcategoryCache()
             }
@@ -469,8 +475,24 @@ struct BudgetMainView: View {
         cloudKitRebuildTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 450_000_000)
             guard !Task.isCancelled else { return }
+            // Sync can reintroduce seeded duplicates from another device/session.
+            budgetManager.deduplicateBudgetCategories(with: viewContext)
             rebuildSubcategoryCache()
         }
+    }
+
+    /// True when any known default category is missing one of its factory subcategories
+    /// (e.g. after CloudKit import of categories that were created without defaults).
+    private func categoriesMayNeedDefaultSubcategories(_ categories: [BudgetCategory]) -> Bool {
+        for category in categories {
+            let defaults = BudgetDefaultSubcategories.subcategories(for: category.name ?? "")
+            guard !defaults.isEmpty else { continue }
+            let existing = Set(((category.subcategories as? Set<BudgetSubcategory>) ?? []).compactMap(\.name))
+            if defaults.contains(where: { !existing.contains($0) }) {
+                return true
+            }
+        }
+        return false
     }
 
     private func rebuildSubcategoryCache() {
@@ -1506,7 +1528,7 @@ struct BudgetCategoryDetailView: View {
             ensureDefaultSubcategoriesExist()
         }
         .navigationTitle(category.displayName)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -1527,18 +1549,18 @@ struct BudgetCategoryDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingAddSubcategory) {
+        .inkSlateSheet(isPresented: $showingAddSubcategory) {
             AddSubcategoryView(category: category)
-                .presentationDetents([.large])
+                .inkSlateSheetDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showingSubcategoryManager) {
+        .inkSlateSheet(isPresented: $showingSubcategoryManager) {
             SubcategoryManagementView(category: category)
         }
-        .sheet(item: $newItem) { item in
+        .inkSlateSheet(item: $newItem) { item in
             BudgetItemDetailView(item: item, budgetManager: budgetManager, isNewItem: true)
         }
-        .sheet(item: $selectedItem) { item in
+        .inkSlateSheet(item: $selectedItem) { item in
             BudgetItemDetailView(item: item, budgetManager: budgetManager)
         }
     }
@@ -1722,55 +1744,41 @@ struct MonthlyIncomeInputView: View {
     @FocusState private var isFieldFocused: Bool
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: DesignSystem.Spacing.xl) {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    Text("Monthly Income")
-                        .font(DesignSystem.Typography.title1)
-                        .fontWeight(.bold)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
-                    Text("Enter your total monthly income")
-                        .font(DesignSystem.Typography.body)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                    HStack(spacing: 4) {
-                        Text("$")
-                            .font(.system(size: 48, weight: .semibold))
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        TextField("0.00", text: $incomeText)
-                            .font(.system(size: 48, weight: .semibold))
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                            #if os(iOS)
-                            .keyboardType(.decimalPad)
-                            #endif
-                            .multilineTextAlignment(.leading)
-                            .textFieldStyle(.plain)
-                            .focused($isFieldFocused)
-                            .onChange(of: incomeText) { _, newValue in
-                                if !newValue.isEmpty && newValue != "0" {
-                                    let filtered = newValue.filter { "0123456789.".contains($0) }
-                                    if filtered != newValue {
-                                        incomeText = filtered
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    InkSlateFormCard(
+                        title: "Amount",
+                        subtitle: "Enter your total monthly income"
+                    ) {
+                        HStack(spacing: DesignSystem.Spacing.sm) {
+                            Text("$")
+                                .font(DesignSystem.Typography.title2)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            TextField("0.00", text: $incomeText)
+                                .font(DesignSystem.Typography.title2)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                #if os(iOS)
+                                .keyboardType(.decimalPad)
+                                #endif
+                                .textFieldStyle(.plain)
+                                .focused($isFieldFocused)
+                                .onChange(of: incomeText) { _, newValue in
+                                    if !newValue.isEmpty && newValue != "0" {
+                                        let filtered = newValue.filter { "0123456789.".contains($0) }
+                                        if filtered != newValue {
+                                            incomeText = filtered
+                                        }
                                     }
                                 }
-                            }
+                        }
                     }
-                    .padding(DesignSystem.Spacing.lg)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
-                            .fill(DesignSystem.Colors.backgroundSecondary)
-                    )
                 }
-                
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, DesignSystem.Spacing.lg)
             }
-            .padding(DesignSystem.Spacing.xl)
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
+            .navigationTitle("Monthly Income")
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1912,10 +1920,10 @@ struct CategoryCardView: View {
         .onChange(of: category.subcategories?.count ?? 0) { _, _ in
             loadSubcategoryBudgets()
         }
-        .sheet(isPresented: $showingEditSubcategory) {
+        .inkSlateSheet(isPresented: $showingEditSubcategory) {
             if let subcategory = editingSubcategory {
                 EditSubcategoryView(subcategory: subcategory)
-                    .presentationDetents([.large])
+                    .inkSlateSheetDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }
@@ -2344,37 +2352,34 @@ struct EditSubcategoryView: View {
     }
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: DesignSystem.Spacing.xl) {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    Text("Subcategory Name")
-                        .font(DesignSystem.Typography.callout)
-                        .fontWeight(.medium)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
-                    TextField("Enter name", text: $name)
-                        .font(DesignSystem.Typography.body)
-                        .padding(DesignSystem.Spacing.md)
-                        .background(DesignSystem.Colors.backgroundSecondary)
-                        .cornerRadius(DesignSystem.CornerRadius.sm)
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    InkSlateFormCard(title: "Subcategory Name") {
+                        TextField("Enter name", text: $name)
+                            .font(DesignSystem.Typography.body)
+                            .textFieldStyle(.plain)
+                    }
+
+                    Button {
+                        saveChanges()
+                    } label: {
+                        Text("Save Changes")
+                            .font(DesignSystem.Typography.headline)
+                            .foregroundColor(DesignSystem.Colors.textInverse)
+                            .frame(maxWidth: .infinity)
+                            .padding(DesignSystem.Spacing.lg)
+                            .background(name.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.accent)
+                            .cornerRadius(DesignSystem.CornerRadius.md)
+                    }
+                    .disabled(name.isEmpty)
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.top, DesignSystem.Spacing.lg)
                 }
-                
-                Spacer()
-                
-                Button {
-                    saveChanges()
-                } label: {
-                    Text("Save Changes")
-                        .font(DesignSystem.Typography.headline)
-                        .foregroundColor(DesignSystem.Colors.textInverse)
-                        .frame(maxWidth: .infinity)
-                        .padding(DesignSystem.Spacing.lg)
-                        .background(name.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.accent)
-                        .cornerRadius(DesignSystem.CornerRadius.md)
-                }
-                .disabled(name.isEmpty)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, DesignSystem.Spacing.lg)
             }
-            .padding(DesignSystem.Spacing.lg)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("Edit Subcategory")
             .inlineNavigationTitle()
             .toolbar {
@@ -2487,78 +2492,48 @@ struct BudgetItemDetailView: View {
     @State private var didCommit = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
-                VStack(spacing: DesignSystem.Spacing.xl) {
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                        Text("Details")
-                            .font(DesignSystem.Typography.headline)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
+                VStack(spacing: 0) {
+                    InkSlateFormCard(title: "Details") {
                         VStack(spacing: DesignSystem.Spacing.md) {
                             VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
                                 Text("Item Name")
                                     .font(DesignSystem.Typography.caption)
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
-                                
                                 TextField("Enter item name", text: $name)
                                     .font(DesignSystem.Typography.body)
-                                    .padding(DesignSystem.Spacing.md)
-                                    .background(DesignSystem.Colors.backgroundSecondary)
-                                    .cornerRadius(DesignSystem.CornerRadius.sm)
+                                    .textFieldStyle(.plain)
                                     .disabled(item.isIncome)
                             }
-                            
                             VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
                                 Text("Amount")
                                     .font(DesignSystem.Typography.caption)
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
-                                
                                 TextField("$0.00", value: $amount, format: .currency(code: "USD"))
                                     .font(DesignSystem.Typography.body)
                                     #if os(iOS)
-                            .keyboardType(.decimalPad)
-                            #endif
-                                    .padding(DesignSystem.Spacing.md)
-                                    .background(DesignSystem.Colors.backgroundSecondary)
-                                    .cornerRadius(DesignSystem.CornerRadius.sm)
+                                    .keyboardType(.decimalPad)
+                                    #endif
+                                    .textFieldStyle(.plain)
                             }
-                            
                             VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
                                 Text("Date")
                                     .font(DesignSystem.Typography.caption)
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
-                                
                                 DatePicker("", selection: $date, displayedComponents: .date)
                                     .labelsHidden()
-                                    .padding(DesignSystem.Spacing.sm)
-                                    .background(DesignSystem.Colors.backgroundSecondary)
-                                    .cornerRadius(DesignSystem.CornerRadius.sm)
                             }
                         }
                     }
-                    .padding(DesignSystem.Spacing.lg)
-                    .background(DesignSystem.Colors.surface)
-                    .cornerRadius(DesignSystem.CornerRadius.md)
-                    
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                        Text("Notes")
-                            .font(DesignSystem.Typography.headline)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
+
+                    InkSlateFormCard(title: "Notes") {
                         TextField("Add notes (optional)", text: $notes, axis: .vertical)
                             .font(DesignSystem.Typography.body)
-                            .lineLimit(3...6)
-                            .padding(DesignSystem.Spacing.md)
-                            .background(DesignSystem.Colors.backgroundSecondary)
-                            .cornerRadius(DesignSystem.CornerRadius.sm)
+                            .lineLimit(3...8)
+                            .textFieldStyle(.plain)
                     }
-                    .padding(DesignSystem.Spacing.lg)
-                    .background(DesignSystem.Colors.surface)
-                    .cornerRadius(DesignSystem.CornerRadius.md)
-                    
+
                     Button {
                         didCommit = true
                         saveItem()
@@ -2572,10 +2547,13 @@ struct BudgetItemDetailView: View {
                             .background(DesignSystem.Colors.accent)
                             .cornerRadius(DesignSystem.CornerRadius.md)
                     }
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.top, DesignSystem.Spacing.lg)
                 }
-                .padding(DesignSystem.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, DesignSystem.Spacing.lg)
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle(item.isIncome ? "Monthly Income" : "Budget Item")
             .inlineNavigationTitle()
             .toolbar {
@@ -2640,7 +2618,7 @@ struct CreateCategoryView: View {
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -2763,9 +2741,10 @@ struct CreateCategoryView: View {
                     }
                     .disabled(name.isEmpty)
                 }
-                .padding(DesignSystem.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, DesignSystem.Spacing.lg)
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("New Category")
             .inlineNavigationTitle()
             .toolbar {
@@ -2798,7 +2777,7 @@ struct CategoryManagementView: View {
     @State private var editCategorySheet: BudgetCategory?
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 LazyVStack(spacing: DesignSystem.Spacing.md) {
                     ForEach(categories, id: \.objectID) { category in
@@ -2813,9 +2792,10 @@ struct CategoryManagementView: View {
                         )
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(DesignSystem.Spacing.lg)
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("Manage Categories")
             .inlineNavigationTitle()
             .toolbar {
@@ -2848,9 +2828,9 @@ struct CategoryManagementView: View {
                     }
                 }
             }
-            .sheet(item: $editCategorySheet) { category in
+            .inkSlateSheet(item: $editCategorySheet) { category in
                 EditCategoryView(category: category, budgetManager: budgetManager)
-                    .presentationDetents([.large])
+                    .inkSlateSheetDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }
@@ -2973,7 +2953,7 @@ struct EditCategoryView: View {
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -3054,9 +3034,10 @@ struct EditCategoryView: View {
                     }
                     .disabled(name.isEmpty)
                 }
-                .padding(DesignSystem.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.bottom, DesignSystem.Spacing.lg)
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("Edit Category")
             .inlineNavigationTitle()
             .toolbar {
@@ -3105,7 +3086,7 @@ struct BudgetTrashView: View {
     ) private var deletedItems: FetchedResults<BudgetItem>
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Group {
                 if deletedItems.isEmpty {
                     VStack(spacing: DesignSystem.Spacing.xl) {
@@ -3162,7 +3143,7 @@ struct BudgetTrashView: View {
                     }
                 }
             }
-            .background(DesignSystem.Colors.background)
+            .inkSlateEditorSheetChrome()
             .navigationTitle("Recently Deleted")
             .inlineNavigationTitle()
             .toolbar {

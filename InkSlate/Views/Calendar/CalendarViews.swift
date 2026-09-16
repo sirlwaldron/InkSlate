@@ -4,253 +4,25 @@ import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
-
-// MARK: - EKEvent Extension
-extension EKEvent: @retroactive Identifiable {
-    public var id: String { eventIdentifier }
-}
-
-#if canImport(UIKit)
-private func inkEventCalendarColor(for event: EKEvent) -> Color {
-    guard let cg = event.calendar.cgColor else { return .blue }
-    return Color(UIColor(cgColor: cg))
-}
-#else
-private func inkEventCalendarColor(for event: EKEvent) -> Color { .blue }
+#if os(macOS)
+import AppKit
 #endif
 
-// MARK: - Calendar Manager
-@MainActor
-class CalendarManager: ObservableObject {
-    static let shared = CalendarManager()
-    
-    @Published var selectedDate = Date()
-    @Published var events: [EKEvent] = []
-    @Published private(set) var eventsByDay: [Date: [EKEvent]] = [:]
-    @Published var allCalendars: [EKCalendar] = []
-    @Published var selectedCalendars: Set<String> = []
-    @Published var isLoading = false
-    @Published var authorizationStatus: EKAuthorizationStatus = .notDetermined
-    @Published var searchQuery: String = ""
-
-    nonisolated(unsafe) let store = EKEventStore()
-    private let selectedCalendarsKey = "selectedCalendarIdentifiers"
-    private var reloadTask: Task<Void, Never>?
-    private var loadToken = UUID()
-    
-    private var dayCalendar: Calendar { Calendar.current }
-    
-    init() {
-        authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-        if let saved = UserDefaults.standard.array(forKey: selectedCalendarsKey) as? [String] {
-            selectedCalendars = Set(saved)
-        }
-        NotificationCenter.default.addObserver(
-            forName: .EKEventStoreChanged,
-            object: store,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.reloadEvents()
-            }
-        }
-    }
-    
-    var canReadEvents: Bool {
-        if #available(iOS 17, *) {
-            return authorizationStatus == .fullAccess
-        } else {
-            return authorizationStatus == .authorized
-        }
-    }
-    
-    var canWriteEvents: Bool {
-        if #available(iOS 17, *) {
-            return authorizationStatus == .fullAccess || authorizationStatus == .writeOnly
-        } else {
-            return authorizationStatus == .authorized
-        }
-    }
-    
-    func refreshAuthorizationStatus() {
-        authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-    }
-    
-    func requestAccess() async {
-        if #available(iOS 17, *) {
-            if authorizationStatus == .notDetermined {
-                do {
-                    _ = try await store.requestFullAccessToEvents()
-                } catch {
-                }
-                refreshAuthorizationStatus()
-            }
-            
-            if canReadEvents {
-                await reloadEverything()
-            }
-        } else {
-            store.requestAccess(to: .event) { [weak self] granted, _ in
-                Task { @MainActor in
-                    self?.authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                    if granted {
-                        await self?.reloadEverything()
-                    }
-                }
-            }
-        }
-    }
-    
-    private func reloadEverything() async {
-        loadCalendars()
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        loadEvents(center: selectedDate)
-    }
-    
-    func loadCalendars() {
-        allCalendars = store.calendars(for: .event)
-        if selectedCalendars.isEmpty {
-            selectedCalendars = Set(allCalendars.map { $0.calendarIdentifier })
-            saveCalendarSelection()
-        }
-    }
-
-    func loadEvents(center: Date? = nil) {
-        guard canReadEvents else {
-            events = []
-            eventsByDay = [:]
-            isLoading = false
-            return
-        }
-        
-        reloadTask?.cancel()
-        let token = UUID()
-        loadToken = token
-        
-        isLoading = true
-        
-        let base = center ?? selectedDate
-        let cal = dayCalendar
-        let startOfBase = cal.startOfDay(for: base)
-        let startDate = cal.date(byAdding: .month, value: -18, to: startOfBase) ?? startOfBase
-        let endDate = cal.date(byAdding: .month, value: 18, to: startOfBase) ?? startOfBase
-        
-        let visibleCalendarIDs: [String] = selectedCalendars.isEmpty
-            ? allCalendars.map(\.calendarIdentifier)
-            : allCalendars.compactMap { selectedCalendars.contains($0.calendarIdentifier) ? $0.calendarIdentifier : nil }
-        
-        guard !visibleCalendarIDs.isEmpty else {
-            events = []
-            eventsByDay = [:]
-            isLoading = false
-            return
-        }
-        
-        reloadTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            let store = self.store
-            let calendars = visibleCalendarIDs.compactMap { store.calendar(withIdentifier: $0) }
-            let predicate = store.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
-
-            let fetched = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
-
-            guard !Task.isCancelled, self.loadToken == token else {
-                if self.loadToken == token {
-                    self.isLoading = false
-                }
-                return
-            }
-            self.events = fetched
-            self.eventsByDay = self.groupEventsByDay(fetched)
-            self.isLoading = false
-        }
-    }
-    
-    func eventsForDay(_ date: Date) -> [EKEvent] {
-        let dayStart = dayCalendar.startOfDay(for: date)
-        guard let list = eventsByDay[dayStart], !list.isEmpty else { return [] }
-        var seen = Set<String>()
-        return list.filter { event in
-            let key = "\(event.eventIdentifier ?? "")-\(event.startDate?.timeIntervalSince1970 ?? 0)"
-            return seen.insert(key).inserted
-        }
-    }
-
-    private func groupEventsByDay(_ events: [EKEvent]) -> [Date: [EKEvent]] {
-        let cal = dayCalendar
-        var dict: [Date: [EKEvent]] = [:]
-
-        for event in events {
-            if event.isAllDay {
-                let start = cal.startOfDay(for: event.startDate)
-                let endExclusive = cal.startOfDay(for: event.endDate)
-                if endExclusive <= start {
-                    dict[start, default: []].append(event)
-                } else {
-                    var d = start
-                    while d < endExclusive {
-                        dict[d, default: []].append(event)
-                        guard let next = cal.date(byAdding: .day, value: 1, to: d) else { break }
-                        d = next
-                    }
-                }
-            } else {
-                var d = cal.startOfDay(for: event.startDate)
-                let lastDay = cal.startOfDay(for: event.endDate)
-                while d <= lastDay {
-                    let dayEnd = cal.date(byAdding: .day, value: 1, to: d) ?? d
-                    if event.startDate < dayEnd && event.endDate > d {
-                        dict[d, default: []].append(event)
-                    }
-                    guard let next = cal.date(byAdding: .day, value: 1, to: d) else { break }
-                    d = next
-                }
-            }
-        }
-
-        for (k, v) in dict {
-            dict[k] = v.sorted { $0.startDate < $1.startDate }
-        }
-        return dict
-    }
-    
-    func toggleCalendar(_ calendar: EKCalendar) {
-        if selectedCalendars.contains(calendar.calendarIdentifier) {
-            selectedCalendars.remove(calendar.calendarIdentifier)
-        } else {
-            selectedCalendars.insert(calendar.calendarIdentifier)
-        }
-        saveCalendarSelection()
-        loadEvents(center: selectedDate)
-    }
-    
-    private func saveCalendarSelection() {
-        UserDefaults.standard.set(Array(selectedCalendars), forKey: selectedCalendarsKey)
-    }
-    
-    func reloadEvents() {
-        loadCalendars()
-        loadEvents(center: selectedDate)
-    }
-    
-    func deleteEvent(_ event: EKEvent) {
-        do {
-            try store.remove(event, span: .thisEvent, commit: true)
-            reloadEvents()
-        } catch {
-        }
+// MARK: - Identified Day (navigation)
+struct IdentifiedDay: Identifiable, Hashable {
+    let date: Date
+    var id: TimeInterval {
+        Calendar.current.startOfDay(for: date).timeIntervalSince1970
     }
 }
 
 // MARK: - Main Calendar View
 struct CalendarMainView: View {
-    @StateObject private var manager = CalendarManager.shared
+    @ObservedObject private var manager = CalendarManager.shared
     @EnvironmentObject var sharedStateManager: SharedStateManager
     @State private var showingSettings = false
-    @State private var showingEventEditor = false
     @State private var showingUpcomingEvents = false
-    @State private var selectedEvent: EKEvent?
+    @State private var dayDestination: IdentifiedDay?
     @State private var currentMonth = Date()
     @State private var showingYearView = false
 
@@ -274,6 +46,7 @@ struct CalendarMainView: View {
                                 onToday: {
                                     manager.selectedDate = Date()
                                     currentMonth = Date()
+                                    dayDestination = IdentifiedDay(date: Date())
                                 },
                                 onSettings: { showingSettings = true }
                             )
@@ -298,7 +71,10 @@ struct CalendarMainView: View {
                         CombinedCalendarView(
                             manager: manager,
                             currentMonth: $currentMonth,
-                            showingEventEditor: $showingEventEditor
+                            onDaySelected: { date in
+                                manager.selectedDate = date
+                                dayDestination = IdentifiedDay(date: date)
+                            }
                         )
                     }
                     .overlay {
@@ -314,21 +90,22 @@ struct CalendarMainView: View {
                         }
                     }
                 } else {
-                    PermissionView(status: manager.authorizationStatus, onRequest: { await manager.requestAccess() })
+                    PermissionView(
+                        status: manager.authorizationStatus,
+                        onRequest: { await manager.requestAccess() },
+                        onRecheck: { manager.refreshAccessFromSettings() }
+                    )
                 }
             }
             .navigationBarHiddenIfPossible(true)
-            .sheet(isPresented: $showingSettings) {
+            .navigationDestination(item: $dayDestination) { day in
+                DayEventsView(date: day.date, manager: manager)
+            }
+            .inkSlateSheet(isPresented: $showingSettings) {
                 CalendarSettingsView(manager: manager)
             }
-            .sheet(isPresented: $showingEventEditor) {
-                EventEditorView(event: nil, startTime: manager.selectedDate, manager: manager)
-            }
-            .sheet(isPresented: $showingUpcomingEvents) {
+            .inkSlateSheet(isPresented: $showingUpcomingEvents) {
                 UpcomingEventsListView(manager: manager)
-            }
-            .sheet(item: $selectedEvent) { event in
-                EventDetailView(event: event, manager: manager)
             }
             .onAppear {
                 manager.refreshAuthorizationStatus()
@@ -336,14 +113,9 @@ struct CalendarMainView: View {
                     manager.reloadEvents()
                 }
             }
-            #if canImport(UIKit)
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-                manager.refreshAuthorizationStatus()
-                if manager.canReadEvents {
-                    manager.reloadEvents()
-                }
+            .onReceive(NotificationCenter.default.publisher(for: PlatformLifecycle.didBecomeActive)) { _ in
+                manager.refreshAccessFromSettings()
             }
-            #endif
             .onChange(of: manager.selectedDate) { _, _ in
                 manager.loadEvents(center: manager.selectedDate)
             }
@@ -694,52 +466,74 @@ struct MonthMiniGrid: View {
 struct CombinedCalendarView: View {
     @ObservedObject var manager: CalendarManager
     @Binding var currentMonth: Date
-    @Binding var showingEventEditor: Bool
-    @State private var selectedEvent: EKEvent?
+    let onDaySelected: (Date) -> Void
     
     var body: some View {
         ScrollView {
-            VStack(spacing: DesignSystem.Spacing.xl) {
-                MonthCalendarGrid(
-                    currentMonth: currentMonth,
-                    selectedDate: $manager.selectedDate,
-                    manager: manager
-                )
-                .padding(.bottom, DesignSystem.Spacing.sm)
-                .background(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
-                        .fill(DesignSystem.Colors.surface)
-                        .shadow(color: DesignSystem.Shadows.small, radius: 14, x: 0, y: 5)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
-                        .stroke(DesignSystem.Colors.border.opacity(0.45), lineWidth: 1)
-                )
+            MonthCalendarGrid(
+                currentMonth: currentMonth,
+                selectedDate: $manager.selectedDate,
+                manager: manager,
+                onDaySelected: onDaySelected
+            )
+            .padding(.bottom, DesignSystem.Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
+                    .fill(DesignSystem.Colors.surface)
+                    .shadow(color: DesignSystem.Shadows.small, radius: 14, x: 0, y: 5)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
+                    .stroke(DesignSystem.Colors.border.opacity(0.45), lineWidth: 1)
+            )
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+            .padding(.bottom, DesignSystem.Spacing.xxl)
+        }
+        .scrollIndicators(.hidden)
+    }
+}
 
+// MARK: - Day Events View
+struct DayEventsView: View {
+    let date: Date
+    @ObservedObject var manager: CalendarManager
+    @State private var selectedEvent: IdentifiedCalendarEvent?
+    @State private var showingEventEditor = false
+    
+    private var dayEvents: [EKEvent] {
+        manager.eventsForDay(date)
+    }
+    
+    private var allDayEvents: [EKEvent] {
+        dayEvents.filter { $0.isAllDay }
+    }
+    
+    private var timedEvents: [EKEvent] {
+        dayEvents.filter { !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+    }
+    
+    var body: some View {
+        ZStack {
+            DesignSystem.Colors.background.ignoresSafeArea()
+            
+            ScrollView {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
-                    HStack(alignment: .center) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(formatDateHeader(manager.selectedDate))
-                                .font(.system(size: 20, weight: .bold, design: .rounded))
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            if !dayEvents.isEmpty {
-                                Text("\(dayEvents.count) event\(dayEvents.count == 1 ? "" : "s")")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                            }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(formatDateHeader(date))
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                        Text(formatDateSubtitle(date))
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                        if !dayEvents.isEmpty {
+                            Text("\(dayEvents.count) event\(dayEvents.count == 1 ? "" : "s")")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
                         }
-                        Spacer(minLength: 0)
-                        Button(action: { showingEventEditor = true }) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 28, weight: .regular))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(DesignSystem.Colors.accent)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Add event")
                     }
                     .padding(.horizontal, DesignSystem.Spacing.xl)
-                    .padding(.top, DesignSystem.Spacing.lg)
+                    .padding(.top, DesignSystem.Spacing.md)
 
                     if !dayEvents.isEmpty {
                         if !allDayEvents.isEmpty {
@@ -754,7 +548,7 @@ struct CombinedCalendarView: View {
                                     HStack(spacing: DesignSystem.Spacing.md) {
                                         ForEach(Array(allDayEvents.enumerated()), id: \.offset) { _, event in
                                             AllDayEventChip(event: event)
-                                                .onTapGesture { selectedEvent = event }
+                                                .onTapGesture { selectedEvent = IdentifiedCalendarEvent(event: event) }
                                         }
                                     }
                                     .padding(.horizontal, DesignSystem.Spacing.xl)
@@ -766,7 +560,7 @@ struct CombinedCalendarView: View {
                         VStack(spacing: DesignSystem.Spacing.md) {
                             ForEach(Array(timedEvents.enumerated()), id: \.offset) { _, event in
                                 EventRow(event: event)
-                                    .onTapGesture { selectedEvent = event }
+                                    .onTapGesture { selectedEvent = IdentifiedCalendarEvent(event: event) }
                             }
                         }
                         .padding(.horizontal, DesignSystem.Spacing.xl)
@@ -778,10 +572,23 @@ struct CombinedCalendarView: View {
                             Text("No events this day")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundColor(DesignSystem.Colors.textSecondary)
-                            Text("Tap a date above or add something new.")
+                            Text("Add a new event to get started.")
                                 .font(.system(size: 14))
                                 .foregroundColor(DesignSystem.Colors.textTertiary)
                                 .multilineTextAlignment(.center)
+                            Button(action: { showingEventEditor = true }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add Event")
+                                }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 14)
+                                .background(DesignSystem.Colors.accent)
+                                .cornerRadius(12)
+                            }
+                            .buttonStyle(.plain)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DesignSystem.Spacing.xxl + 8)
@@ -789,48 +596,68 @@ struct CombinedCalendarView: View {
                     }
                 }
                 .padding(.bottom, DesignSystem.Spacing.xxl)
-                .background(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
-                        .fill(DesignSystem.Colors.surface)
-                        .shadow(color: DesignSystem.Shadows.small, radius: 14, x: 0, y: 5)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.xxl + 4, style: .continuous)
-                        .stroke(DesignSystem.Colors.border.opacity(0.45), lineWidth: 1)
-                )
             }
-            .padding(.horizontal, DesignSystem.Spacing.lg)
-            .padding(.bottom, DesignSystem.Spacing.xxl)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
-        .sheet(item: $selectedEvent) { event in
-            EventDetailView(event: event, manager: manager)
+        .navigationTitle(shortDayTitle(date))
+        .inlineNavigationTitle()
+        .navigationBarHiddenIfPossible(false)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { showingEventEditor = true }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .accessibilityLabel("Add event")
+            }
+        }
+        .inkSlateSheet(item: $selectedEvent) { selection in
+            EventDetailView(event: selection.event, manager: manager)
+        }
+        .inkSlateSheet(isPresented: $showingEventEditor) {
+            EventEditorView(event: nil, startTime: defaultNewEventStart, manager: manager)
+        }
+        .onAppear {
+            manager.selectedDate = date
+            manager.loadEvents(center: date)
         }
     }
     
-    private var dayEvents: [EKEvent] {
-        manager.eventsForDay(manager.selectedDate)
-    }
-    
-    private var allDayEvents: [EKEvent] {
-        dayEvents.filter { $0.isAllDay }
-    }
-    
-    private var timedEvents: [EKEvent] {
-        dayEvents.filter { !$0.isAllDay }
-            .sorted { $0.startDate < $1.startDate }
+    private var defaultNewEventStart: Date {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            return Date()
+        }
+        var components = cal.dateComponents([.year, .month, .day], from: date)
+        components.hour = 9
+        components.minute = 0
+        return cal.date(from: components) ?? date
     }
     
     private func formatDateHeader(_ date: Date) -> String {
-        let formatter = DateFormatter()
         if Calendar.current.isDateInToday(date) {
             return "Today"
         } else if Calendar.current.isDateInTomorrow(date) {
             return "Tomorrow"
+        } else if Calendar.current.isDateInYesterday(date) {
+            return "Yesterday"
         } else {
-            formatter.dateFormat = "EEEE, MMMM d"
+            let formatter = DateFormatter()
+            formatter.dateFormat = "EEEE"
             return formatter.string(from: date)
         }
+    }
+    
+    private func formatDateSubtitle(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM d, yyyy"
+        return formatter.string(from: date)
+    }
+    
+    private func shortDayTitle(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
     }
 }
 
@@ -839,6 +666,7 @@ struct MonthCalendarGrid: View {
     let currentMonth: Date
     @Binding var selectedDate: Date
     @ObservedObject var manager: CalendarManager
+    let onDaySelected: (Date) -> Void
     
     private var monthDates: [[Date]] {
         let cal = Calendar.current
@@ -909,6 +737,7 @@ struct MonthCalendarGrid: View {
                             withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
                                 selectedDate = date
                             }
+                            onDaySelected(date)
                         }
                     }
                 }
@@ -1246,7 +1075,7 @@ struct EventDetailView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingEdit) {
+            .inkSlateSheet(isPresented: $showingEdit) {
                 EventEditorView(event: event, startTime: nil, manager: manager)
             }
             .alert("Delete Event", isPresented: $showingDeleteConfirmation) {
@@ -1315,7 +1144,7 @@ struct CalendarToggleRow: View {
 struct UpcomingEventsListView: View {
     @ObservedObject var manager: CalendarManager
     @Environment(\.dismiss) var dismiss
-    @State private var selectedEvent: EKEvent?
+    @State private var selectedEvent: IdentifiedCalendarEvent?
     @State private var showingEventEditor = false
     @State private var filterOption: EventFilterOption = .week
     @State private var searchText = ""
@@ -1390,7 +1219,12 @@ struct UpcomingEventsListView: View {
         let range = filterOption.dateRange
         let rangeStartDay = cal.startOfDay(for: range.start)
         let grouped = Dictionary(grouping: filteredEvents) { event in
-            let eventDay = cal.startOfDay(for: event.startDate ?? .distantPast)
+            let eventDay: Date
+            if event.isAllDay, let start = event.startDate {
+                eventDay = CalendarManager.allDayCivilDay(from: start, displayCalendar: cal)
+            } else {
+                eventDay = cal.startOfDay(for: event.startDate ?? .distantPast)
+            }
             return max(eventDay, rangeStartDay)
         }
         return grouped.sorted { $0.key < $1.key }.map { pair in
@@ -1519,7 +1353,7 @@ struct UpcomingEventsListView: View {
                                         ForEach(listRowModels(for: group)) { row in
                                             UpcomingEventRow(event: row.event)
                                                 .onTapGesture {
-                                                    selectedEvent = row.event
+                                                    selectedEvent = IdentifiedCalendarEvent(event: row.event)
                                                 }
                                         }
                                     }
@@ -1544,10 +1378,10 @@ struct UpcomingEventsListView: View {
                     }
                 }
             }
-            .sheet(item: $selectedEvent) { event in
-                EventDetailView(event: event, manager: manager)
+            .inkSlateSheet(item: $selectedEvent) { selection in
+                EventDetailView(event: selection.event, manager: manager)
             }
-            .sheet(isPresented: $showingEventEditor) {
+            .inkSlateSheet(isPresented: $showingEventEditor) {
                 EventEditorView(event: nil, startTime: Date(), manager: manager)
             }
             .onAppear {
@@ -1759,6 +1593,7 @@ struct UpcomingEventRow: View {
 struct PermissionView: View {
     let status: EKAuthorizationStatus
     let onRequest: () async -> Void
+    var onRecheck: (() -> Void)? = nil
     
     var body: some View {
         VStack(spacing: DesignSystem.Spacing.xl) {
@@ -1807,7 +1642,7 @@ struct PermissionView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button(action: { Task { await onRequest() } }) {
+                    Button(action: { onRecheck?() }) {
                         Text("Check Again")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(DesignSystem.Colors.accent)
@@ -1838,23 +1673,31 @@ struct PermissionView: View {
     }
     
     private var message: String {
-        if #available(iOS 17, *) {
+        if #available(iOS 17, macOS 14, *) {
             if status == .writeOnly {
-                return "InkSlate currently needs full access to show your existing events. You’ve granted write-only access, which can create events but can’t display your calendar."
+                return "InkSlate needs Full Access to show your existing events. Write Only can’t display them. Open Settings → InkSlate → Calendars and choose Full Access."
             }
         }
         
         if status == .denied || status == .restricted {
-            return "Calendar access is turned off. You can enable it in Settings to view and manage your events."
+            #if os(macOS)
+            return "Calendar access is turned off. Open System Settings → Privacy & Security → Calendars and enable InkSlate with Full Access."
+            #else
+            return "Calendar access is turned off. Open Settings → InkSlate → Calendars and enable Full Access to view and manage your events."
+            #endif
         }
         
-        return "Please grant calendar access to view and manage your events."
+        return "Please grant full calendar access to view and manage your events."
     }
     
     private func openAppSettings() {
         #if canImport(UIKit)
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+        #elseif os(macOS)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
+            NSWorkspace.shared.open(url)
+        }
         #endif
     }
 }
@@ -1886,8 +1729,15 @@ struct EventEditorView: View {
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         selectedCalendar != nil &&
-        endDate > startDate &&
+        hasValidDateRange &&
         !isSaving
+    }
+    
+    private var hasValidDateRange: Bool {
+        if isAllDay {
+            return dayCalendar.startOfDay(for: endDate) >= dayCalendar.startOfDay(for: startDate)
+        }
+        return endDate > startDate
     }
     
     private var validationMessage: String? {
@@ -1897,7 +1747,11 @@ struct EventEditorView: View {
         if selectedCalendar == nil {
             return "Please select a calendar"
         }
-        if endDate <= startDate && !isAllDay {
+        if isAllDay {
+            if dayCalendar.startOfDay(for: endDate) < dayCalendar.startOfDay(for: startDate) {
+                return "End date must be on or after the start date"
+            }
+        } else if endDate <= startDate {
             return "End time must be after start time"
         }
         return nil
@@ -1923,8 +1777,17 @@ struct EventEditorView: View {
                 }
                 
                 Section("Time") {
-                    DatePicker("Starts", selection: $startDate, displayedComponents: isAllDay ? .date : [.date, .hourAndMinute])
-                    DatePicker("Ends", selection: $endDate, in: isAllDay ? Date.distantPast... : startDate..., displayedComponents: isAllDay ? .date : [.date, .hourAndMinute])
+                    if isAllDay {
+                        DatePicker("Starts", selection: $startDate, displayedComponents: .date)
+                            .environment(\.timeZone, TimeZone.current)
+                        DatePicker("Ends", selection: $endDate, in: dayCalendar.startOfDay(for: startDate)..., displayedComponents: .date)
+                            .environment(\.timeZone, TimeZone.current)
+                    } else {
+                        DatePicker("Starts", selection: $startDate, displayedComponents: [.date, .hourAndMinute])
+                            .environment(\.timeZone, TimeZone.current)
+                        DatePicker("Ends", selection: $endDate, in: startDate..., displayedComponents: [.date, .hourAndMinute])
+                            .environment(\.timeZone, TimeZone.current)
+                    }
                 }
                 
                 Section("Additional Info") {
@@ -1981,13 +1844,26 @@ struct EventEditorView: View {
             }
             .onChange(of: isAllDay) { _, newValue in
                 if newValue {
-                    DispatchQueue.main.async {
-                        normalizeAllDayDates()
+                    // Keep the selected calendar day; pin to noon so DatePicker/timezone math can't slip a day.
+                    startDate = Self.noon(on: startDate, calendar: dayCalendar)
+                    endDate = Self.noon(on: endDate, calendar: dayCalendar)
+                    if dayCalendar.startOfDay(for: endDate) < dayCalendar.startOfDay(for: startDate) {
+                        endDate = startDate
                     }
+                } else {
+                    let day = dayCalendar.startOfDay(for: startDate)
+                    let hour = dayCalendar.component(.hour, from: Date())
+                    startDate = dayCalendar.date(bySettingHour: max(hour, 9), minute: 0, second: 0, of: day) ?? day
+                    endDate = startDate.addingTimeInterval(3600)
                 }
             }
             .onChange(of: startDate) { _, newValue in
-                if !isAllDay && endDate <= newValue {
+                if isAllDay {
+                    let startDay = dayCalendar.startOfDay(for: newValue)
+                    if dayCalendar.startOfDay(for: endDate) < startDay {
+                        endDate = Self.noon(on: newValue, calendar: dayCalendar)
+                    }
+                } else if endDate <= newValue {
                     endDate = newValue.addingTimeInterval(3600)
                 }
             }
@@ -2002,58 +1878,49 @@ struct EventEditorView: View {
     private func setupInitialValues() {
         if let event = event {
             title = event.title ?? ""
-            startDate = event.startDate
-            endDate = event.endDate
             isAllDay = event.isAllDay
             location = event.location ?? ""
             notes = event.notes ?? ""
             selectedCalendar = event.calendar
+            if event.isAllDay {
+                // Read floating all-day civil day (EventKit uses GMT midnight under the hood).
+                // EventKit all-day end is exclusive — convert to inclusive end for the UI.
+                startDate = Self.noon(
+                    on: Self.civilDay(fromAllDay: event.startDate, localCalendar: dayCalendar),
+                    calendar: dayCalendar
+                )
+                let endExclusive = Self.civilDay(fromAllDay: event.endDate, localCalendar: dayCalendar)
+                let startDay = dayCalendar.startOfDay(for: startDate)
+                if endExclusive <= startDay {
+                    endDate = startDate
+                } else {
+                    let inclusiveEnd = dayCalendar.date(byAdding: .day, value: -1, to: endExclusive) ?? startDay
+                    endDate = Self.noon(on: max(inclusiveEnd, startDay), calendar: dayCalendar)
+                }
+            } else {
+                startDate = event.startDate
+                endDate = event.endDate
+            }
         } else {
-            startDate = startTime ?? Date()
-            endDate = startDate.addingTimeInterval(3600)
+            let base = startTime ?? Date()
+            startDate = base
+            endDate = base.addingTimeInterval(3600)
             selectedCalendar = manager.allCalendars.first(where: { $0.allowsContentModifications })
+                ?? manager.store.defaultCalendarForNewEvents
         }
     }
     
-    private func normalizeAllDayDates() {
-        guard isAllDay else { return }
-        
-        let cal = dayCalendar
-        let startComponents = cal.dateComponents([.year, .month, .day], from: startDate)
-        
-        var startDateComponents = DateComponents()
-        startDateComponents.year = startComponents.year
-        startDateComponents.month = startComponents.month
-        startDateComponents.day = startComponents.day
-        startDateComponents.hour = 0
-        startDateComponents.minute = 0
-        startDateComponents.second = 0
-        
-        if let normalizedStart = cal.date(from: startDateComponents) {
-            startDate = normalizedStart
-        }
-        
-        let endComponents = cal.dateComponents([.year, .month, .day], from: endDate)
-        let startDay = cal.date(from: startComponents)
-        let endDay = cal.date(from: endComponents)
-        
-        if let start = startDay, let end = endDay {
-            if end <= start {
-                endDate = cal.date(byAdding: .day, value: 1, to: startDate) ?? endDate
-            } else {
-                var endDateComponents = DateComponents()
-                endDateComponents.year = endComponents.year
-                endDateComponents.month = endComponents.month
-                endDateComponents.day = endComponents.day
-                endDateComponents.hour = 0
-                endDateComponents.minute = 0
-                endDateComponents.second = 0
-                
-                if let normalizedEnd = cal.date(from: endDateComponents) {
-                    endDate = cal.date(byAdding: .day, value: 1, to: normalizedEnd) ?? endDate
-                }
-            }
-        }
+    /// Noon avoids DatePicker / timezone edge cases around local midnight.
+    private static func noon(on date: Date, calendar cal: Calendar) -> Date {
+        cal.date(bySettingHour: 12, minute: 0, second: 0, of: date) ?? date
+    }
+    
+    private static func civilDay(fromAllDay date: Date, localCalendar cal: Calendar) -> Date {
+        var gmt = Calendar(identifier: .gregorian)
+        gmt.timeZone = TimeZone(secondsFromGMT: 0)!
+        let ymd = gmt.dateComponents([.year, .month, .day], from: date)
+        return cal.date(from: DateComponents(year: ymd.year, month: ymd.month, day: ymd.day))
+            ?? cal.startOfDay(for: date)
     }
     
     private func saveEvent() {
@@ -2075,24 +1942,47 @@ struct EventEditorView: View {
             return
         }
         
+        guard hasValidDateRange else {
+            errorMessage = validationMessage ?? "Invalid date range."
+            showingError = true
+            return
+        }
+        
         isSaving = true
         
         let eventToSave = event ?? EKEvent(eventStore: manager.store)
         eventToSave.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        if isAllDay {
-            normalizeAllDayDates()
-        }
-        
-        eventToSave.startDate = startDate
-        eventToSave.endDate = endDate
-        eventToSave.isAllDay = isAllDay
         eventToSave.location = location.isEmpty ? nil : location
         eventToSave.notes = notes.isEmpty ? nil : notes
         eventToSave.calendar = calendar
         
+        if isAllDay {
+            // Consensus from EventKit / Stack Overflow / working samples:
+            // 1) set isAllDay BEFORE dates
+            // 2) use local startOfDay
+            // 3) single-day: endDate == startDate (EventKit expands storage itself)
+            // 4) multi-day: exclusive end = day after last inclusive day
+            // 5) do NOT force a GMT timeZone (that shifts US timezones back one day)
+            let startDay = dayCalendar.startOfDay(for: startDate)
+            let endInclusive = dayCalendar.startOfDay(for: endDate)
+            eventToSave.isAllDay = true
+            eventToSave.startDate = startDay
+            if endInclusive <= startDay {
+                eventToSave.endDate = startDay
+            } else if let exclusiveEnd = dayCalendar.date(byAdding: .day, value: 1, to: endInclusive) {
+                eventToSave.endDate = exclusiveEnd
+            } else {
+                eventToSave.endDate = startDay
+            }
+        } else {
+            eventToSave.isAllDay = false
+            eventToSave.startDate = startDate
+            eventToSave.endDate = endDate
+        }
+        
         do {
             try manager.store.save(eventToSave, span: .thisEvent, commit: true)
+            manager.selectedDate = isAllDay ? dayCalendar.startOfDay(for: startDate) : startDate
             manager.reloadEvents()
             dismiss()
         } catch let error {

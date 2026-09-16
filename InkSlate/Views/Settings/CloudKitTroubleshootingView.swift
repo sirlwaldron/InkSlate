@@ -12,7 +12,7 @@ struct CloudKitTroubleshootingView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 12) {
@@ -112,11 +112,13 @@ struct CloudKitTroubleshootingView: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
             }
+            .inkSlateFormContainer()
             .navigationTitle("iCloud Sync")
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {

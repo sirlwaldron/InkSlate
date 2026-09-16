@@ -5,8 +5,10 @@ import CoreData
 struct PantryItemRowView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @ObservedObject var item: PantryItemEntity
+    var onEdit: (() -> Void)? = nil
     
     @State private var currentQuantity: Int = 1
+    @State private var showingUsedUpPrompt = false
     
     private var quantityDisplay: String {
         let unit = item.wrappedUnit
@@ -29,11 +31,12 @@ struct PantryItemRowView: View {
     }
     
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: DesignSystem.Spacing.lg) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.wrappedName)
-                    .font(.system(size: 16, weight: .medium, design: .default))
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .font(DesignSystem.Typography.body)
+                    .fontWeight(.medium)
+                    .foregroundColor(currentQuantity == 0 ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.textPrimary)
                 
                 if let expiration = expirationDisplay {
                     HStack(spacing: 4) {
@@ -41,10 +44,20 @@ struct PantryItemRowView: View {
                             .fill(isExpiringSoon ? Color.orange : DesignSystem.Colors.textTertiary.opacity(0.5))
                             .frame(width: 6, height: 6)
                         Text(expiration)
-                            .font(.system(size: 12, weight: .regular))
+                            .font(DesignSystem.Typography.caption)
                             .foregroundColor(isExpiringSoon ? .orange : DesignSystem.Colors.textTertiary)
                     }
                 }
+                
+                if currentQuantity == 0 {
+                    Text("Out of stock")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.error)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onEdit?()
             }
             
             Spacer()
@@ -54,14 +67,17 @@ struct PantryItemRowView: View {
                     adjustQuantity(-1)
                 } label: {
                     Image(systemName: "minus")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(DesignSystem.Typography.caption)
+                        .fontWeight(.medium)
                         .foregroundColor(DesignSystem.Colors.textSecondary)
                         .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 
                 Text(quantityDisplay)
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .font(DesignSystem.Typography.headline)
+                    .monospacedDigit()
                     .foregroundColor(DesignSystem.Colors.textPrimary)
                     .frame(minWidth: 48)
                 
@@ -69,30 +85,54 @@ struct PantryItemRowView: View {
                     adjustQuantity(1)
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(DesignSystem.Typography.caption)
+                        .fontWeight(.medium)
                         .foregroundColor(DesignSystem.Colors.textSecondary)
                         .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
             .background(
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
                     .stroke(DesignSystem.Colors.textTertiary.opacity(0.2), lineWidth: 1)
             )
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, DesignSystem.Spacing.md)
         .onAppear {
-            if let qty = Int(item.wrappedQuantity) {
-                currentQuantity = max(1, qty)
+            currentQuantity = max(0, Int(item.wrappedQuantity) ?? 1)
+        }
+        .onChange(of: item.wrappedQuantity) { _, newValue in
+            currentQuantity = max(0, Int(newValue) ?? currentQuantity)
+        }
+        .alert("\(item.wrappedName) used up?", isPresented: $showingUsedUpPrompt) {
+            Button("Remove from Pantry", role: .destructive) {
+                removeItem()
             }
+            Button("Keep at 0", role: .cancel) { }
+        } message: {
+            Text("You're out of this item. Remove it from your pantry, or keep it at 0 as a reminder to restock.")
         }
     }
     
     private func adjustQuantity(_ delta: Int) {
-        currentQuantity = max(1, currentQuantity + delta)
-        item.quantity = String(currentQuantity)
+        let newQuantity = max(0, currentQuantity + delta)
+        guard newQuantity != currentQuantity else { return }
+        currentQuantity = newQuantity
+        item.quantity = String(newQuantity)
         item.modifiedDate = Date()
 
+        if viewContext.inkSlateSave(module: "Pantry") {
+            lightHaptic()
+        }
+        
+        if newQuantity == 0 {
+            showingUsedUpPrompt = true
+        }
+    }
+    
+    private func removeItem() {
+        viewContext.delete(item)
         if viewContext.inkSlateSave(module: "Pantry") {
             lightHaptic()
         }

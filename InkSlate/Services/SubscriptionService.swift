@@ -12,6 +12,7 @@ final class SubscriptionService: ObservableObject {
     @Published private(set) var products: [Product] = []
     @Published private(set) var isLoadingProducts = false
     @Published private(set) var activeProductID: String?
+    @Published private(set) var isEligibleForIntroOffer = false
     @Published var purchaseErrorMessage: String?
     @Published var isPurchasing = false
 
@@ -19,10 +20,10 @@ final class SubscriptionService: ObservableObject {
     private var transactionListener: Task<Void, Never>?
 
     private init() {
-        transactionListener = listenForTransactionUpdates()
-        Task {
-            await refreshEntitlements()
-            await loadProducts()
+        Task { @MainActor in
+            self.transactionListener = self.listenForTransactionUpdates()
+            await self.refreshEntitlements()
+            await self.loadProducts()
         }
     }
 
@@ -46,6 +47,7 @@ final class SubscriptionService: ObservableObject {
             products = InkSlateProducts.loadOrder.compactMap { id in
                 loaded.first { $0.id == id }
             }
+            await updateIntroOfferEligibility()
             log.info("Loaded \(self.products.count) IAP products")
         } catch {
             log.error("Product load failed: \(error.localizedDescription, privacy: .public)")
@@ -66,9 +68,54 @@ final class SubscriptionService: ObservableObject {
             }
         }
 
+        if !pro {
+            for productID in InkSlateProducts.subscriptionIDs {
+                guard let product = product(for: productID),
+                      let subscription = product.subscription else { continue }
+                do {
+                    let statuses = try await subscription.status
+                    for status in statuses {
+                        guard case .verified(let renewalInfo) = status.renewalInfo else { continue }
+                        switch status.state {
+                        case .subscribed, .inGracePeriod, .inBillingRetryPeriod:
+                            pro = true
+                            activeID = renewalInfo.currentProductID
+                        default:
+                            break
+                        }
+                    }
+                } catch {
+                    log.error("Subscription status check failed: \(error.localizedDescription, privacy: .public)")
+                }
+                if pro { break }
+            }
+        }
+
         isPro = pro
         activeProductID = activeID
         log.info("Entitlements refreshed — isPro=\(pro, privacy: .public)")
+    }
+
+    func hasFreeTrial(for product: Product?) -> Bool {
+        guard let product,
+              isEligibleForIntroOffer,
+              let offer = product.subscription?.introductoryOffer else { return false }
+        return offer.paymentMode == .freeTrial
+    }
+
+    func freeTrialPeriodDescription(for product: Product?) -> String? {
+        guard let product,
+              let offer = product.subscription?.introductoryOffer,
+              offer.paymentMode == .freeTrial else { return nil }
+        return Self.describe(period: offer.period)
+    }
+
+    func subscriptionTrialSubtitle(for product: Product, fallbackPrice: String) -> String {
+        if hasFreeTrial(for: product),
+           let trial = freeTrialPeriodDescription(for: product) {
+            return "\(trial) free, then \(fallbackPrice)"
+        }
+        return fallbackPrice
     }
 
     func purchase(_ product: Product) async {
@@ -81,8 +128,9 @@ final class SubscriptionService: ObservableObject {
             switch result {
             case .success(let verification):
                 let transaction = try checkVerified(verification)
-                await transaction.finish()
                 await refreshEntitlements()
+                await transaction.finish()
+                await refreshEntitlementsWithRetry()
             case .userCancelled:
                 break
             case .pending:
@@ -128,8 +176,44 @@ final class SubscriptionService: ObservableObject {
 
     private func handleTransactionUpdate(_ update: VerificationResult<Transaction>) async {
         guard let transaction = try? checkVerified(update) else { return }
-        await transaction.finish()
         await refreshEntitlements()
+        await transaction.finish()
+        await refreshEntitlementsWithRetry()
+    }
+
+    private func updateIntroOfferEligibility() async {
+        guard let groupID = yearlyProduct?.subscription?.subscriptionGroupID
+            ?? monthlyProduct?.subscription?.subscriptionGroupID else {
+            isEligibleForIntroOffer = false
+            return
+        }
+        isEligibleForIntroOffer = await Product.SubscriptionInfo.isEligibleForIntroOffer(for: groupID)
+        log.info("Intro offer eligible=\(self.isEligibleForIntroOffer, privacy: .public)")
+    }
+
+    private func refreshEntitlementsWithRetry(maxAttempts: Int = 5) async {
+        for attempt in 0..<maxAttempts {
+            await refreshEntitlements()
+            if isPro { return }
+            guard attempt < maxAttempts - 1 else { break }
+            let delayMs = 250 * (attempt + 1)
+            try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+        }
+    }
+
+    private static func describe(period: Product.SubscriptionPeriod) -> String {
+        switch period.unit {
+        case .day:
+            return period.value == 1 ? "1 day" : "\(period.value) days"
+        case .week:
+            return period.value == 1 ? "1 week" : "\(period.value) weeks"
+        case .month:
+            return period.value == 1 ? "1 month" : "\(period.value) months"
+        case .year:
+            return period.value == 1 ? "1 year" : "\(period.value) years"
+        @unknown default:
+            return "\(period.value) days"
+        }
     }
 
     private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {

@@ -146,8 +146,11 @@ class NotesService: ObservableObject {
         
         return notes.filter { note in
             let titleMatch = note.title?.localizedCaseInsensitiveContains(trimmed) ?? false
+            let contentMatch = (note.content).map {
+                MarkdownSerialization.searchablePlainText(from: $0).localizedCaseInsensitiveContains(trimmed)
+            } ?? false
             return titleMatch ||
-                (note.content?.localizedCaseInsensitiveContains(trimmed) ?? false) ||
+                contentMatch ||
                 (note.preview?.localizedCaseInsensitiveContains(trimmed) ?? false) ||
                 (note.tags?.components(separatedBy: ",").contains { $0.localizedCaseInsensitiveContains(trimmed) } ?? false)
         }

@@ -4,6 +4,26 @@ import os
 
 fileprivate let wantToWatchLog = Logger(subsystem: "com.lucas.InkSlateNew", category: "WantToWatch")
 
+// MARK: - Layout helpers
+private enum WatchShelfLayout {
+    /// Target ~4–5 posters visible per shelf / grid row.
+    static let posterMinWidth: CGFloat = 96
+    static let posterMaxWidth: CGFloat = 128
+    static let posterAspect: CGFloat = 1.5
+    static let shelfSpacing: CGFloat = 10
+    static let gridSpacing: CGFloat = 12
+
+    static var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: posterMinWidth, maximum: posterMaxWidth), spacing: gridSpacing)]
+    }
+
+    static func shelfPosterWidth(containerWidth: CGFloat, visibleCount: CGFloat = 4.4) -> CGFloat {
+        let available = max(containerWidth - DesignSystem.Spacing.lg * 2, posterMinWidth * 2)
+        let width = (available - shelfSpacing * (visibleCount - 1)) / visibleCount
+        return min(max(width, posterMinWidth), posterMaxWidth)
+    }
+}
+
 // MARK: - Want to Watch Main View
 struct WantToWatchMainView: View {
     @Environment(\.managedObjectContext) private var viewContext
@@ -15,7 +35,7 @@ struct WantToWatchMainView: View {
         request.fetchBatchSize = 50
         _allItems = FetchRequest(fetchRequest: request, animation: .default)
     }
-    
+
     @State private var searchText = ""
     @State private var searchResults: [TMDBItem] = []
     @State private var isSearching = false
@@ -24,21 +44,20 @@ struct WantToWatchMainView: View {
     @State private var selectedFilter: WatchFilter? = nil
     @State private var selectedCategory: String? = nil
     @State private var showingStats = false
-    @State private var animateCards = false
-    
+
     enum WatchFilter: String, CaseIterable {
         case upNext = "Up Next"
         case watched = "Watched"
         case all = "All"
-        
+
         var icon: String {
             switch self {
             case .upNext: return "play.circle.fill"
             case .watched: return "checkmark.circle.fill"
-            case .all: return "list.bullet"
+            case .all: return "square.grid.2x2"
             }
         }
-        
+
         var color: Color {
             switch self {
             case .upNext: return DesignSystem.Colors.info
@@ -47,15 +66,15 @@ struct WantToWatchMainView: View {
             }
         }
     }
-    
+
     var notWatchedItems: [WantToWatchItem] {
         allItems.filter { !$0.isWatched }
     }
-    
+
     var watchedItems: [WantToWatchItem] {
         allItems.filter { $0.isWatched }
     }
-    
+
     var filteredItems: [WantToWatchItem] {
         let items: [WantToWatchItem]
         if let filter = selectedFilter {
@@ -67,18 +86,18 @@ struct WantToWatchMainView: View {
         } else {
             items = Array(allItems)
         }
-        
+
         if let category = selectedCategory {
             return items.filter { $0.watchShelfCategory == category }
         }
-        
+
         return items
     }
-    
+
     var groupedItems: [String: [WantToWatchItem]] {
         Dictionary(grouping: filteredItems) { $0.watchShelfCategory }
     }
-    
+
     func getCategoryCount(_ category: String) -> Int {
         let items: [WantToWatchItem]
         if let filter = selectedFilter {
@@ -92,7 +111,7 @@ struct WantToWatchMainView: View {
         }
         return items.filter { $0.watchShelfCategory == category }.count
     }
-    
+
     var orderedCategories: [String] {
         let standardCategories = ["anime", "tv", "movie"]
         let existingCategories = Set(groupedItems.keys)
@@ -102,325 +121,271 @@ struct WantToWatchMainView: View {
             .sorted()
         return standardCategories + additionalCategories
     }
-    
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    DesignSystem.Colors.background,
-                    DesignSystem.Colors.backgroundSecondary.opacity(0.3),
             DesignSystem.Colors.background
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
                 .ignoresSafeArea()
-            .animation(.easeInOut(duration: 3).repeatForever(autoreverses: true), value: animateCards)
-            
+
             NavigationStack {
                 ScrollView {
-                VStack(spacing: 0) {
-                        VStack(spacing: DesignSystem.Spacing.lg) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text("🎬")
-                                            .font(.system(size: 28))
-                                    Text("Want to Watch")
-                                        .font(DesignSystem.Typography.largeTitle)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                                    }
-                                    
-                                    Text("Your personal entertainment hub")
-                                        .font(DesignSystem.Typography.callout)
-                                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                                }
-                                
-                                Spacer()
-                                
-                                Button(action: { showingStats.toggle() }) {
-                                    VStack(spacing: 2) {
-                                        Image(systemName: "chart.bar.fill")
-                                            .font(.system(size: 16, weight: .semibold))
-                                        Text("Stats")
-                                            .font(DesignSystem.Typography.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(DesignSystem.Colors.info)
-                                    .padding(8)
-                                    .background(DesignSystem.Colors.info.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            }
-                            
-                            HStack(spacing: DesignSystem.Spacing.lg) {
-                                StatCard(
-                                    title: "Total",
-                                    value: "\(allItems.count)",
-                                    icon: "list.bullet",
-                                    color: DesignSystem.Colors.accent
-                                )
-                                
-                                StatCard(
-                                    title: "Up Next",
-                                    value: "\(notWatchedItems.count)",
-                                    icon: "play.circle",
-                                    color: DesignSystem.Colors.info
-                                )
-                                
-                                StatCard(
-                                    title: "Watched",
-                                    value: "\(watchedItems.count)",
-                                    icon: "checkmark.circle",
-                                    color: DesignSystem.Colors.success
-                                )
-                            }
-                            
-                            SearchBarEnhanced(text: $searchText)
-                        }
-                        .padding(DesignSystem.Spacing.lg)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20)
-                                .fill(DesignSystem.Colors.surface)
-                                .shadow(color: DesignSystem.Shadows.small, radius: 8, x: 0, y: 4)
-                        )
-                        .padding(.horizontal, DesignSystem.Spacing.lg)
-                        .padding(.top, DesignSystem.Spacing.sm)
-                    
-                        if searchText.isEmpty {
-                            VStack(spacing: DesignSystem.Spacing.sm) {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: DesignSystem.Spacing.sm) {
-                                        CompactCategoryTab(
-                                            title: "All",
-                                            icon: "square.grid.2x2",
-                                            isSelected: selectedCategory == nil,
-                                            count: nil,
-                                            color: DesignSystem.Colors.accent
-                                        ) {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                selectedCategory = nil
-                                            }
-                                        }
-                                        
-                                        CompactCategoryTab(
-                                            title: "TV",
-                                            icon: "tv.fill",
-                                            isSelected: selectedCategory == "tv",
-                                            count: getCategoryCount("tv"),
-                                            color: DesignSystem.Colors.success
-                                        ) {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                selectedCategory = "tv"
-                                            }
-                                        }
-                                        
-                                        CompactCategoryTab(
-                                            title: "Movies",
-                                            icon: "film.fill",
-                                            isSelected: selectedCategory == "movie",
-                                            count: getCategoryCount("movie"),
-                                            color: DesignSystem.Colors.info
-                                        ) {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                selectedCategory = "movie"
-                                            }
-                                        }
-                                        
-                                        CompactCategoryTab(
-                                            title: "ANIME",
-                                            icon: "sparkles",
-                                            isSelected: selectedCategory == "anime",
-                                            count: getCategoryCount("anime"),
-                                            color: .purple
-                                        ) {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                selectedCategory = "anime"
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                                }
-                                
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: DesignSystem.Spacing.sm) {
-                                        ForEach(WatchFilter.allCases.filter { $0 != .all }, id: \.self) { filter in
-                                            CompactFilterPill(
-                                                filter: filter,
-                                                isSelected: selectedFilter == filter,
-                                                count: getCount(for: filter)
-                                            ) {
-                                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                    if selectedFilter == filter {
-                                                        selectedFilter = nil
-                                                    } else {
-                                                        selectedFilter = filter
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                                }
-                            }
-                            .padding(.vertical, DesignSystem.Spacing.sm)
-                    }
-                    
-                    if isSearching {
-                            VStack(spacing: DesignSystem.Spacing.xl) {
-                            Spacer()
-                            LottieLoadingView()
-                            Text("Searching...")
-                                .font(DesignSystem.Typography.headline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                            Spacer()
-                        }
-                            .frame(height: 300)
-                    } else if let error = searchErrorMessage, !searchText.isEmpty {
-                        VStack(spacing: DesignSystem.Spacing.xl) {
-                            Spacer()
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 48, weight: .light))
-                                .foregroundColor(DesignSystem.Colors.warning)
-                            VStack(spacing: 12) {
-                                Text("Search unavailable")
-                                    .font(DesignSystem.Typography.title1)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                                Text(error)
-                                    .font(DesignSystem.Typography.callout)
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            Spacer()
-                        }
-                        .frame(height: 300)
-                    } else if !searchText.isEmpty && !searchResults.isEmpty {
-                            VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
-                            HStack {
-                                Text("Search Results")
-                                    .font(DesignSystem.Typography.title2)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                                Spacer()
-                                Text("\(searchResults.count)")
-                                    .font(DesignSystem.Typography.headline)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(DesignSystem.Colors.info)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(DesignSystem.Colors.info.opacity(0.1))
-                                        .cornerRadius(12)
-                            }
-                                .padding(.horizontal, DesignSystem.Spacing.lg)
-                            
-                                LazyVStack(spacing: DesignSystem.Spacing.md) {
-                                    ForEach(Array(searchResults.enumerated()), id: \.element.id) { index, item in
-                                        SearchResultCardEnhanced(item: item) {
-                                            addToWantToWatch(item)
-                                        }
-                                        .transition(.asymmetric(
-                                            insertion: .scale.combined(with: .opacity),
-                                            removal: .scale.combined(with: .opacity)
-                                        ))
-                                        .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(index) * 0.1), value: searchResults.count)
-                                    }
-                                }
-                                .padding(.horizontal, DesignSystem.Spacing.lg)
-                        }
-                    } else if !searchText.isEmpty && searchResults.isEmpty {
-                        VStack(spacing: DesignSystem.Spacing.xl) {
-                            Spacer()
-                                Image(systemName: "magnifyingglass.circle")
-                                    .font(.system(size: 64, weight: .light))
-                                .foregroundColor(DesignSystem.Colors.textTertiary)
-                            
-                                VStack(spacing: 12) {
-                                Text("No Results")
-                                    .font(DesignSystem.Typography.title1)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                                
-                                Text("Try searching with different keywords")
-                                    .font(DesignSystem.Typography.callout)
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                            }
-                            Spacer()
-                        }
-                            .frame(height: 300)
-                    } else {
-                        if allItems.isEmpty {
-                            VStack(spacing: DesignSystem.Spacing.xl) {
-                                Spacer()
-                                    Image(systemName: "popcorn.fill")
-                                    .font(.system(size: 64, weight: .light))
-                                    .foregroundColor(DesignSystem.Colors.textTertiary)
-                                
-                                VStack(spacing: 12) {
-                                    Text("Your list is empty")
-                                        .font(DesignSystem.Typography.largeTitle)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                                    
-                                    Text("Search and add movies & TV shows to get started")
-                                        .font(DesignSystem.Typography.callout)
-                                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                                        .multilineTextAlignment(.center)
-                                }
-                                Spacer()
-                            }
-                                .frame(height: 300)
-                            .padding(DesignSystem.Spacing.xl)
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        headerSection
+                        filterSection
+
+                        if isSearching {
+                            statusBlock(icon: nil, title: "Searching…", message: nil, showProgress: true)
+                        } else if let error = searchErrorMessage, !searchText.isEmpty {
+                            statusBlock(
+                                icon: "exclamationmark.triangle",
+                                title: "Search unavailable",
+                                message: error,
+                                showProgress: false
+                            )
+                        } else if !searchText.isEmpty && !searchResults.isEmpty {
+                            searchResultsSection
+                        } else if !searchText.isEmpty && searchResults.isEmpty {
+                            statusBlock(
+                                icon: "magnifyingglass",
+                                title: "No results",
+                                message: "Try a different title or keyword",
+                                showProgress: false
+                            )
+                        } else if allItems.isEmpty {
+                            statusBlock(
+                                icon: "popcorn",
+                                title: "Your shelves are empty",
+                                message: "Search above to add movies and shows",
+                                showProgress: false
+                            )
                         } else {
-                            if selectedCategory != nil {
-                                LazyVStack(spacing: DesignSystem.Spacing.md) {
-                                    ForEach(filteredItems, id: \.objectID) { item in
-                                        WantToWatchItemCardEnhanced(item: item, isWatched: item.isWatched)
-                                    }
-                                }
-                                .padding(.horizontal, DesignSystem.Spacing.lg)
-                                .padding(.bottom, DesignSystem.Spacing.xl)
-                            } else {
-                                LazyVStack(spacing: DesignSystem.Spacing.lg) {
-                                    ForEach(orderedCategories, id: \.self) { category in
-                                        if let items = groupedItems[category], !items.isEmpty {
-                                            MediaCategorySection(
-                                                category: category,
-                                                items: items
-                                            )
-                                        }
-                                    }
-                                }
-                                .padding(.horizontal, DesignSystem.Spacing.lg)
-                                .padding(.bottom, DesignSystem.Spacing.xl)
-                            }
+                            librarySection
                         }
                     }
+                    .padding(.bottom, DesignSystem.Spacing.xxl)
                 }
-            }
-            .navigationBarHiddenIfPossible(true)
-            .onChange(of: searchText) { _, newValue in
-                performSearch(newValue)
-            }
-            .onAppear {
-                withAnimation(.easeInOut(duration: 1.5)) {
-                    animateCards = true
+                .navigationBarHiddenIfPossible(true)
+                .onChange(of: searchText) { _, newValue in
+                    performSearch(newValue)
                 }
-                if selectedCategory == "cartoon" {
-                    selectedCategory = "tv"
+                .onAppear {
+                    if selectedCategory == "cartoon" {
+                        selectedCategory = "tv"
+                    }
                 }
-            }
-            .sheet(isPresented: $showingStats) {
-                WatchStatsView(items: allItems)
-            }
-            .keyboardDismissToolbar()
+                .inkSlateSheet(isPresented: $showingStats) {
+                    WatchStatsView(items: allItems)
+                }
+                .keyboardDismissToolbar()
             }
         }
     }
-    
+
+    // MARK: Header
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Want to Watch")
+                        .font(DesignSystem.Typography.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                    Text(subtitleText)
+                        .font(DesignSystem.Typography.callout)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Button {
+                    showingStats = true
+                } label: {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.info)
+                        .frame(width: 36, height: 36)
+                        .background(DesignSystem.Colors.info.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Watch statistics")
+            }
+
+            SearchBarEnhanced(text: $searchText)
+        }
+        .padding(.horizontal, DesignSystem.Spacing.lg)
+        .padding(.top, DesignSystem.Spacing.sm)
+    }
+
+    private var subtitleText: String {
+        let upNext = notWatchedItems.count
+        let watched = watchedItems.count
+        if allItems.isEmpty {
+            return "Build your watchlist"
+        }
+        return "\(upNext) up next · \(watched) watched"
+    }
+
+    // MARK: Filters
+
+    private var filterSection: some View {
+        Group {
+            if searchText.isEmpty {
+                VStack(spacing: DesignSystem.Spacing.sm) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DesignSystem.Spacing.sm) {
+                            CompactCategoryTab(
+                                title: "All",
+                                icon: "square.grid.2x2",
+                                isSelected: selectedCategory == nil,
+                                count: nil,
+                                color: DesignSystem.Colors.accent
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCategory = nil
+                                }
+                            }
+
+                            CompactCategoryTab(
+                                title: "TV",
+                                icon: "tv.fill",
+                                isSelected: selectedCategory == "tv",
+                                count: getCategoryCount("tv"),
+                                color: DesignSystem.Colors.success
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCategory = "tv"
+                                }
+                            }
+
+                            CompactCategoryTab(
+                                title: "Movies",
+                                icon: "film.fill",
+                                isSelected: selectedCategory == "movie",
+                                count: getCategoryCount("movie"),
+                                color: DesignSystem.Colors.info
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCategory = "movie"
+                                }
+                            }
+
+                            CompactCategoryTab(
+                                title: "Anime",
+                                icon: "sparkles",
+                                isSelected: selectedCategory == "anime",
+                                count: getCategoryCount("anime"),
+                                color: .purple
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCategory = "anime"
+                                }
+                            }
+                        }
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DesignSystem.Spacing.sm) {
+                            ForEach(WatchFilter.allCases.filter { $0 != .all }, id: \.self) { filter in
+                                CompactFilterPill(
+                                    filter: filter,
+                                    isSelected: selectedFilter == filter,
+                                    count: getCount(for: filter)
+                                ) {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        selectedFilter = selectedFilter == filter ? nil : filter
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Library
+
+    @ViewBuilder
+    private var librarySection: some View {
+        if selectedCategory != nil {
+            // Filtered category → full poster grid (~4–5 across)
+            LazyVGrid(columns: WatchShelfLayout.gridColumns, spacing: WatchShelfLayout.gridSpacing) {
+                ForEach(filteredItems, id: \.objectID) { item in
+                    WatchPosterCard(item: item)
+                }
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+        } else {
+            // Browse mode → horizontal shelves by category
+            LazyVStack(spacing: DesignSystem.Spacing.xl) {
+                ForEach(orderedCategories, id: \.self) { category in
+                    if let items = groupedItems[category], !items.isEmpty {
+                        WatchShelfSection(category: category, items: items)
+                    }
+                }
+            }
+        }
+    }
+
+    private var searchResultsSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack {
+                Text("Search Results")
+                    .font(DesignSystem.Typography.title2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                Spacer()
+                Text("\(searchResults.count)")
+                    .font(DesignSystem.Typography.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+
+            LazyVGrid(columns: WatchShelfLayout.gridColumns, spacing: WatchShelfLayout.gridSpacing) {
+                ForEach(searchResults, id: \.id) { item in
+                    SearchPosterCard(item: item) {
+                        addToWantToWatch(item)
+                    }
+                }
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+        }
+    }
+
+    private func statusBlock(icon: String?, title: String, message: String?, showProgress: Bool) -> some View {
+        VStack(spacing: DesignSystem.Spacing.md) {
+            if showProgress {
+                ProgressView()
+                    .controlSize(.regular)
+            } else if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 40, weight: .light))
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
+            }
+
+            Text(title)
+                .font(DesignSystem.Typography.title2)
+                .fontWeight(.semibold)
+                .foregroundColor(DesignSystem.Colors.textPrimary)
+
+            if let message {
+                Text(message)
+                    .font(DesignSystem.Typography.callout)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DesignSystem.Spacing.xxl)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 64)
+    }
+
     private func getCount(for filter: WatchFilter) -> Int {
         switch filter {
         case .upNext: return notWatchedItems.count
@@ -428,33 +393,26 @@ struct WantToWatchMainView: View {
         case .all: return allItems.count
         }
     }
-    
-    private func getCountForCurrentFilter() -> Int {
-        if let filter = selectedFilter {
-            return getCount(for: filter)
-        }
-        return allItems.count
-    }
-    
+
     private func performSearch(_ query: String) {
         searchTask?.cancel()
-        
+
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         if TMDBConfig.apiKey == nil {
             searchResults = []
             isSearching = false
             searchErrorMessage = TMDBError.missingAPIKey.localizedDescription
             return
         }
-        
+
         if trimmed.isEmpty {
             searchResults = []
             isSearching = false
             searchErrorMessage = nil
             return
         }
-        
+
         isSearching = true
         searchErrorMessage = nil
         searchTask = Task {
@@ -478,10 +436,10 @@ struct WantToWatchMainView: View {
             }
         }
     }
-    
+
     private func addToWantToWatch(_ item: TMDBItem) {
         guard item.mediaType == "movie" || item.mediaType == "tv" else { return }
-        
+
         let dupReq: NSFetchRequest<WantToWatchItem> = WantToWatchItem.fetchRequest()
         dupReq.fetchLimit = 1
         dupReq.predicate = NSPredicate(format: "tmdbId == %d AND isMovie == %@", item.id, NSNumber(value: item.mediaType == "movie"))
@@ -490,7 +448,7 @@ struct WantToWatchMainView: View {
             searchResults = []
             return
         }
-        
+
         let newItem = WantToWatchItem(context: viewContext)
         newItem.id = UUID()
         newItem.createdDate = Date()
@@ -504,9 +462,8 @@ struct WantToWatchMainView: View {
         newItem.isMovie = item.mediaType == "movie"
         newItem.releaseDate = TMDBService.shared.parseDate(item.releaseDate ?? item.firstAirDate)
         newItem.isWatched = false
-        
         newItem.mediaCategory = item.mediaType == "movie" ? "movie" : "tv"
-        
+
         Task {
             await determineAndSetCategory(for: newItem)
         }
@@ -516,14 +473,14 @@ struct WantToWatchMainView: View {
             searchResults = []
         }
     }
-    
+
     private func determineAndSetCategory(for item: WantToWatchItem) async {
         do {
             let details = try await TMDBService.shared.fetchFullDetails(
                 id: Int(item.tmdbId),
                 isMovie: item.isMovie
             )
-            
+
             await MainActor.run {
                 guard !item.isDeleted, item.managedObjectContext != nil else { return }
                 item.mediaCategory = WantToWatchMediaCategory.fromTMDBGenres(
@@ -535,92 +492,349 @@ struct WantToWatchMainView: View {
                     networkNames: details.networkNames
                 )
                 item.modifiedDate = Date()
-
                 _ = viewContext.inkSlateSave(module: "WantToWatch")
             }
         } catch {
+            // Keep default category from media type.
         }
     }
 }
 
-// MARK: - Stat Card Component
-struct StatCard: View {
-    let title: String
-    let value: String
-    let icon: String
-    let color: Color
-    
-    var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(value)
-                    .font(DesignSystem.Typography.headline)
-                    .fontWeight(.bold)
-            }
-            .foregroundColor(color)
-            
-            Text(title)
-                .font(DesignSystem.Typography.caption)
-                .foregroundColor(DesignSystem.Colors.textSecondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(color.opacity(0.1))
-        .cornerRadius(8)
-    }
-}
+// MARK: - Horizontal Shelf Section
+struct WatchShelfSection: View {
+    let category: String
+    let items: [WantToWatchItem]
 
-// MARK: - Category Tab Component
-struct CategoryTab: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let count: Int?
-    let color: Color
-    let action: () -> Void
-    
+    var categoryTitle: String {
+        switch category {
+        case "anime": return "Anime"
+        case "cartoon", "tv": return "TV"
+        case "movie": return "Movies"
+        default: return category.capitalized
+        }
+    }
+
+    var categoryIcon: String {
+        switch category {
+        case "anime": return "sparkles"
+        case "cartoon", "tv": return "tv.fill"
+        case "movie": return "film.fill"
+        default: return "play.circle.fill"
+        }
+    }
+
+    var categoryColor: Color {
+        switch category {
+        case "anime": return .purple
+        case "cartoon", "tv": return DesignSystem.Colors.success
+        case "movie": return DesignSystem.Colors.info
+        default: return DesignSystem.Colors.accent
+        }
+    }
+
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack(spacing: 8) {
+                Image(systemName: categoryIcon)
                     .font(.system(size: 14, weight: .semibold))
-                
-                Text(title)
-                    .font(DesignSystem.Typography.callout)
-                    .fontWeight(.medium)
-                
-                if let count = count, count > 0 {
-                    Text("\(count)")
-                        .font(DesignSystem.Typography.caption)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(color.opacity(0.2))
-                        .cornerRadius(8)
+                    .foregroundColor(categoryColor)
+
+                Text(categoryTitle)
+                    .font(DesignSystem.Typography.title2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                Text("\(items.count)")
+                    .font(DesignSystem.Typography.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(categoryColor.opacity(0.12))
+                    .clipShape(Capsule())
+
+                Spacer()
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+
+            GeometryReader { geo in
+                let posterWidth = WatchShelfLayout.shelfPosterWidth(containerWidth: geo.size.width)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: WatchShelfLayout.shelfSpacing) {
+                        ForEach(items, id: \.objectID) { item in
+                            WatchPosterCard(item: item)
+                                .frame(width: posterWidth)
+                        }
+                    }
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
                 }
             }
-            .foregroundColor(isSelected ? .white : color)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(isSelected ? color : color.opacity(0.1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 20)
-                    .stroke(color, lineWidth: isSelected ? 0 : 1)
-            )
+            .frame(height: shelfRowHeight)
         }
-        .buttonStyle(PlainButtonStyle())
-        .scaleEffect(isSelected ? 1.05 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+    }
+
+    private var shelfRowHeight: CGFloat {
+        // Sized for ~4.4 posters across a typical phone width, plus title/meta.
+        let sampleWidth = WatchShelfLayout.shelfPosterWidth(containerWidth: 390)
+        return sampleWidth * WatchShelfLayout.posterAspect + 48
     }
 }
 
-// MARK: - Compact Category Tab Component
+// MARK: - Poster Card (library item)
+struct WatchPosterCard: View {
+    @ObservedObject var item: WantToWatchItem
+    @Environment(\.managedObjectContext) private var viewContext
+    @State private var showDetails = false
+    @State private var showDeleteConfirmation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topTrailing) {
+                Button {
+                    showDetails = true
+                } label: {
+                    posterImage
+                }
+                .buttonStyle(.plain)
+
+                // Watched toggle — own button, no parent gesture stealing taps
+                Button {
+                    toggleWatchedStatus()
+                } label: {
+                    Image(systemName: item.isWatched ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(
+                            item.isWatched ? DesignSystem.Colors.success : Color.white.opacity(0.95),
+                            item.isWatched ? Color.white : Color.black.opacity(0.35)
+                        )
+                        .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(item.isWatched ? "Mark as unwatched" : "Mark as watched")
+            }
+
+            Button {
+                showDetails = true
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title ?? "Unknown")
+                        .font(DesignSystem.Typography.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 28, alignment: .top)
+
+                    HStack(spacing: 4) {
+                        if item.rating > 0 {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 8))
+                                .foregroundColor(DesignSystem.Colors.warning)
+                            Text(String(format: "%.1f", item.rating))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if item.isWatched {
+                            Text("Watched")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(DesignSystem.Colors.success)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .contextMenu {
+            Button {
+                toggleWatchedStatus()
+            } label: {
+                Label(
+                    item.isWatched ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: item.isWatched ? "circle" : "checkmark.circle"
+                )
+            }
+
+            Button(role: .destructive) {
+                showDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .alert("Delete Item", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                deleteItem()
+            }
+        } message: {
+            Text("Remove \"\(item.title ?? "this item")\" from your list?")
+        }
+        .inkSlateSheet(isPresented: $showDetails) {
+            ItemDetailView(item: item)
+        }
+    }
+
+    private var posterImage: some View {
+        ZStack(alignment: .bottomLeading) {
+            AsyncImage(url: item.posterURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                case .failure:
+                    posterPlaceholder
+                case .empty:
+                    posterPlaceholder
+                        .overlay(ProgressView().controlSize(.mini))
+                @unknown default:
+                    posterPlaceholder
+                }
+            }
+            .aspectRatio(2 / 3, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        item.isWatched ? DesignSystem.Colors.success.opacity(0.7) : DesignSystem.Colors.border,
+                        lineWidth: item.isWatched ? 2 : 0.5
+                    )
+            )
+            .overlay {
+                if item.isWatched {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(0.18))
+                }
+            }
+
+            Text(item.isMovie ? "Movie" : "TV")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.black.opacity(0.65))
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .padding(6)
+        }
+    }
+
+    private var posterPlaceholder: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(DesignSystem.Colors.backgroundSecondary)
+            .aspectRatio(2 / 3, contentMode: .fit)
+            .overlay(
+                Image(systemName: item.isMovie ? "film" : "tv")
+                    .font(.system(size: 20, weight: .light))
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
+            )
+    }
+
+    private func toggleWatchedStatus() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            item.isWatched.toggle()
+            item.modifiedDate = Date()
+            item.watchedDate = item.isWatched ? Date() : nil
+        }
+
+        if !viewContext.inkSlateSave(module: "WantToWatch") {
+            wantToWatchLog.error("Save watched status failed")
+        }
+    }
+
+    private func deleteItem() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            viewContext.delete(item)
+        }
+        _ = viewContext.inkSlateSave(module: "WantToWatch")
+    }
+}
+
+// MARK: - Search Poster Card
+struct SearchPosterCard: View {
+    let item: TMDBItem
+    let onAdd: () -> Void
+    @State private var isAdded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topTrailing) {
+                AsyncImage(url: item.posterURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    default:
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(DesignSystem.Colors.backgroundSecondary)
+                            .overlay(
+                                Image(systemName: item.mediaType == "movie" ? "film" : "tv")
+                                    .foregroundColor(DesignSystem.Colors.textTertiary)
+                            )
+                    }
+                }
+                .aspectRatio(2 / 3, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(DesignSystem.Colors.border, lineWidth: 0.5)
+                )
+
+                Button {
+                    guard !isAdded else { return }
+                    onAdd()
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        isAdded = true
+                    }
+                } label: {
+                    Image(systemName: isAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(
+                            isAdded ? DesignSystem.Colors.success : Color.white,
+                            isAdded ? Color.white : DesignSystem.Colors.info
+                        )
+                        .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isAdded ? "Added" : "Add to list")
+            }
+
+            Text(item.displayTitle)
+                .font(DesignSystem.Typography.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(DesignSystem.Colors.textPrimary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 28, alignment: .top)
+
+            HStack(spacing: 4) {
+                if item.rating > 0 {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(DesignSystem.Colors.warning)
+                    Text(String(format: "%.1f", item.rating))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                }
+                Spacer(minLength: 0)
+                Text(item.mediaType == "movie" ? "Movie" : "TV")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
+            }
+        }
+    }
+}
+
+// MARK: - Compact Category Tab
 struct CompactCategoryTab: View {
     let title: String
     let icon: String
@@ -628,18 +842,18 @@ struct CompactCategoryTab: View {
     let count: Int?
     let color: Color
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .semibold))
-                
+
                 Text(title)
                     .font(DesignSystem.Typography.caption)
                     .fontWeight(.semibold)
-                
-                if let count = count, count > 0 {
+
+                if let count, count > 0 {
                     Text("\(count)")
                         .font(.system(size: 10, weight: .bold))
                         .padding(.horizontal, 4)
@@ -656,27 +870,27 @@ struct CompactCategoryTab: View {
                     .fill(isSelected ? color : color.opacity(0.1))
             )
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
     }
 }
 
-// MARK: - Compact Filter Pill Component
+// MARK: - Compact Filter Pill
 struct CompactFilterPill: View {
     let filter: WantToWatchMainView.WatchFilter
     let isSelected: Bool
     let count: Int
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: filter.icon)
                     .font(.system(size: 11, weight: .semibold))
-                
+
                 Text(filter.rawValue)
                     .font(DesignSystem.Typography.caption)
                     .fontWeight(.semibold)
-                
+
                 if count > 0 {
                     Text("\(count)")
                         .font(.system(size: 10, weight: .bold))
@@ -694,363 +908,39 @@ struct CompactFilterPill: View {
                     .fill(isSelected ? filter.color : filter.color.opacity(0.1))
             )
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
     }
 }
 
-// MARK: - Filter Pill Component
-struct FilterPill: View {
-    let filter: WantToWatchMainView.WatchFilter
-    let isSelected: Bool
-    let count: Int
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: filter.icon)
-                    .font(.system(size: 12, weight: .semibold))
-                
-                Text(filter.rawValue)
-                    .font(DesignSystem.Typography.callout)
-                    .fontWeight(.medium)
-                
-                if count > 0 {
-                    Text("\(count)")
-                        .font(DesignSystem.Typography.caption)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(filter.color.opacity(0.2))
-                        .cornerRadius(8)
-                }
-            }
-            .foregroundColor(isSelected ? .white : filter.color)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(isSelected ? filter.color : filter.color.opacity(0.1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 20)
-                    .stroke(filter.color, lineWidth: isSelected ? 0 : 1)
-            )
-        }
-        .buttonStyle(PlainButtonStyle())
-        .scaleEffect(isSelected ? 1.05 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
-    }
-}
-
-// MARK: - Watch Stats View
-struct WatchStatsView: View {
-    let items: FetchedResults<WantToWatchItem>
-    @Environment(\.dismiss) private var dismiss
-    
-    var watchedCount: Int {
-        items.filter { $0.isWatched }.count
-    }
-    
-    var notWatchedCount: Int {
-        items.filter { !$0.isWatched }.count
-    }
-    
-    var movieCount: Int {
-        items.filter { $0.isMovie }.count
-    }
-    
-    var tvCount: Int {
-        items.filter { !$0.isMovie }.count
-    }
-    
-    var animeLibraryCount: Int {
-        items.filter { ($0.mediaCategory ?? "") == "anime" }.count
-    }
-    
-    var averageRating: Double {
-        let ratedItems = items.filter { $0.rating > 0 }
-        guard !ratedItems.isEmpty else { return 0 }
-        return ratedItems.reduce(0) { $0 + $1.rating } / Double(ratedItems.count)
-    }
-    
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: DesignSystem.Spacing.xl) {
-                    VStack(spacing: DesignSystem.Spacing.md) {
-                        Text("📊")
-                            .font(.system(size: 48))
-                        
-                        Text("Watch Statistics")
-                            .font(DesignSystem.Typography.largeTitle)
-                            .fontWeight(.bold)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        Text("Your entertainment journey")
-                            .font(DesignSystem.Typography.callout)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                    }
-                    .padding(.top, DesignSystem.Spacing.lg)
-                    
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: DesignSystem.Spacing.lg) {
-                        StatCard(
-                            title: "Total Items",
-                            value: "\(items.count)",
-                            icon: "list.bullet",
-                            color: DesignSystem.Colors.accent
-                        )
-                        
-                        StatCard(
-                            title: "Watched",
-                            value: "\(watchedCount)",
-                            icon: "checkmark.circle",
-                            color: DesignSystem.Colors.success
-                        )
-                        
-                        StatCard(
-                            title: "Up Next",
-                            value: "\(notWatchedCount)",
-                            icon: "play.circle",
-                            color: DesignSystem.Colors.info
-                        )
-                        
-                        StatCard(
-                            title: "Movies",
-                            value: "\(movieCount)",
-                            icon: "film",
-                            color: DesignSystem.Colors.warning
-                        )
-                        
-                        StatCard(
-                            title: "TV Shows",
-                            value: "\(tvCount)",
-                            icon: "tv",
-                            color: DesignSystem.Colors.error
-                        )
-                        
-                        StatCard(
-                            title: "Anime",
-                            value: "\(animeLibraryCount)",
-                            icon: "sparkles",
-                            color: .purple
-                        )
-                        
-                        StatCard(
-                            title: "Avg Rating",
-                            value: String(format: "%.1f", averageRating),
-                            icon: "star.fill",
-                            color: DesignSystem.Colors.warning
-                        )
-                    }
-                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                    
-                    if items.count > 0 {
-                        VStack(spacing: DesignSystem.Spacing.md) {
-                            Text("Watch Progress")
-                                .font(DesignSystem.Typography.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            ZStack {
-                                Circle()
-                                    .stroke(DesignSystem.Colors.border, lineWidth: 8)
-                                    .frame(width: 120, height: 120)
-                                
-                                Circle()
-                                    .trim(from: 0, to: CGFloat(watchedCount) / CGFloat(items.count))
-                                    .stroke(
-                                        LinearGradient(
-                                            colors: [DesignSystem.Colors.success, DesignSystem.Colors.info],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                                    )
-                                    .frame(width: 120, height: 120)
-                                    .rotationEffect(.degrees(-90))
-                                    .animation(.easeInOut(duration: 1.5), value: watchedCount)
-                                
-                                VStack(spacing: 2) {
-                                    Text("\(Int((CGFloat(watchedCount) / CGFloat(items.count)) * 100))%")
-                                        .font(DesignSystem.Typography.title1)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                                    
-                                    Text("Complete")
-                                        .font(DesignSystem.Typography.caption)
-                                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                                }
-                            }
-                        }
-                        .padding(DesignSystem.Spacing.xl)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(DesignSystem.Colors.surface)
-                                .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
-                        )
-                        .padding(.horizontal, DesignSystem.Spacing.lg)
-                    }
-                    
-                    Spacer(minLength: DesignSystem.Spacing.xl)
-                }
-            }
-            .background(DesignSystem.Colors.background)
-            .navigationTitle("Statistics")
-            .inlineNavigationTitle()
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundColor(DesignSystem.Colors.info)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Want to Watch Item Card
-struct WantToWatchItemCard: View {
-    @ObservedObject var item: WantToWatchItem
-    let isWatched: Bool
-    @Environment(\.managedObjectContext) private var viewContext
-    
-    var body: some View {
-        HStack(spacing: DesignSystem.Spacing.md) {
-            AsyncImage(url: posterURL) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Rectangle()
-                    .fill(DesignSystem.Colors.backgroundSecondary)
-                    .overlay(
-                        Image(systemName: item.isMovie ? "film" : "tv")
-                            .font(.system(size: 14))
-                            .foregroundColor(DesignSystem.Colors.textTertiary)
-                    )
-            }
-            .frame(width: 40, height: 60)
-            .cornerRadius(DesignSystem.CornerRadius.sm)
-            .clipped()
-            
-            VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                Text(item.title ?? "Unknown")
-                    .font(DesignSystem.Typography.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                
-                HStack(spacing: DesignSystem.Spacing.sm) {
-                    Image(systemName: item.isMovie ? "film" : "tv")
-                        .font(.system(size: 10))
-                        .foregroundColor(item.isMovie ? DesignSystem.Colors.info : DesignSystem.Colors.success)
-                    
-                    if item.rating > 0 {
-                        HStack(spacing: DesignSystem.Spacing.xs) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 8))
-                                .foregroundColor(DesignSystem.Colors.warning)
-                            Text(String(format: "%.1f", item.rating))
-                                .font(DesignSystem.Typography.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        }
-                    }
-                    
-                    Spacer()
-                }
-                
-                if let releaseDate = item.releaseDate {
-                    Text(formatDate(releaseDate))
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(DesignSystem.Colors.textTertiary)
-                }
-            }
-            
-            Spacer()
-            
-            Button(action: toggleWatchedStatus) {
-                Image(systemName: isWatched ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18))
-                    .foregroundColor(isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.textTertiary)
-            }
-            .buttonStyle(PlainButtonStyle())
-        }
-        .padding(.horizontal, DesignSystem.Spacing.md)
-        .padding(.vertical, DesignSystem.Spacing.sm)
-        .background(DesignSystem.Colors.surface)
-        .cornerRadius(DesignSystem.CornerRadius.sm)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.sm)
-                .stroke(DesignSystem.Colors.border, lineWidth: 0.5)
-        )
-        .shadow(
-            color: DesignSystem.Shadows.small,
-            radius: 1,
-            x: 0,
-            y: 1
-        )
-    }
-    
-    private var posterURL: URL? {
-        guard let posterPath = item.posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(posterPath)")
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
-    }
-    
-    private func toggleWatchedStatus() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            item.isWatched.toggle()
-            item.modifiedDate = Date()
-            
-            if item.isWatched {
-                item.watchedDate = Date()
-            } else {
-                item.watchedDate = nil
-            }
-        }
-
-        _ = viewContext.inkSlateSave(module: "WantToWatch")
-    }
-}
-
-// MARK: - Enhanced Search Bar
+// MARK: - Search Bar
 struct SearchBarEnhanced: View {
     @Binding var text: String
     @FocusState private var isFocused: Bool
-    
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundColor(DesignSystem.Colors.textTertiary)
-                .font(.system(size: 16, weight: .semibold))
-            
-            TextField("Search movies, shows...", text: $text)
+                .font(.system(size: 15, weight: .semibold))
+
+            TextField("Search movies, shows…", text: $text)
                 .font(DesignSystem.Typography.body)
-                .fontWeight(.medium)
                 #if os(iOS)
                 .textInputAutocapitalization(.none)
                 #endif
                 .foregroundColor(DesignSystem.Colors.textPrimary)
                 .focused($isFocused)
                 .tint(DesignSystem.Colors.info)
-            
+
             if !text.isEmpty {
-                Button(action: { text = "" }) {
+                Button {
+                    text = ""
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(DesignSystem.Colors.textTertiary)
                         .font(.system(size: 16))
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding(12)
@@ -1063,176 +953,137 @@ struct SearchBarEnhanced: View {
     }
 }
 
-// MARK: - Lottie-like Loading Animation
-struct LottieLoadingView: View {
-    @State private var isAnimating = false
-    
+// MARK: - Watch Stats
+struct WatchStatsView: View {
+    let items: FetchedResults<WantToWatchItem>
+    @Environment(\.dismiss) private var dismiss
+
+    var watchedCount: Int { items.filter { $0.isWatched }.count }
+    var notWatchedCount: Int { items.filter { !$0.isWatched }.count }
+    var movieCount: Int { items.filter { $0.isMovie }.count }
+    var tvCount: Int { items.filter { !$0.isMovie }.count }
+    var animeLibraryCount: Int { items.filter { ($0.mediaCategory ?? "") == "anime" }.count }
+
+    var averageRating: Double {
+        let ratedItems = items.filter { $0.rating > 0 }
+        guard !ratedItems.isEmpty else { return 0 }
+        return ratedItems.reduce(0) { $0 + $1.rating } / Double(ratedItems.count)
+    }
+
     var body: some View {
-        ZStack {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(DesignSystem.Colors.info.opacity(0.6))
-                    .frame(width: 12, height: 12)
-                    .offset(x: CGFloat(cos(Double(index) * .pi * 2 / 3)) * 25)
-                    .offset(y: CGFloat(sin(Double(index) * .pi * 2 / 3)) * 25)
-                    .scaleEffect(isAnimating ? 1 : 0.6)
-                    .animation(
-                        Animation.easeInOut(duration: 1)
-                            .repeatForever()
-                            .delay(Double(index) * 0.15),
-                        value: isAnimating
-                    )
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: DesignSystem.Spacing.xl) {
+                    VStack(spacing: DesignSystem.Spacing.sm) {
+                        Text("Watch Statistics")
+                            .font(DesignSystem.Typography.largeTitle)
+                            .fontWeight(.bold)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                        Text("Your entertainment journey")
+                            .font(DesignSystem.Typography.callout)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                    }
+                    .padding(.top, DesignSystem.Spacing.lg)
+
+                    LazyVGrid(columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ], spacing: DesignSystem.Spacing.lg) {
+                        WatchStatTile(title: "Total", value: "\(items.count)", icon: "square.stack", color: DesignSystem.Colors.accent)
+                        WatchStatTile(title: "Watched", value: "\(watchedCount)", icon: "checkmark.circle", color: DesignSystem.Colors.success)
+                        WatchStatTile(title: "Up Next", value: "\(notWatchedCount)", icon: "play.circle", color: DesignSystem.Colors.info)
+                        WatchStatTile(title: "Movies", value: "\(movieCount)", icon: "film", color: DesignSystem.Colors.warning)
+                        WatchStatTile(title: "TV Shows", value: "\(tvCount)", icon: "tv", color: DesignSystem.Colors.error)
+                        WatchStatTile(title: "Anime", value: "\(animeLibraryCount)", icon: "sparkles", color: .purple)
+                        WatchStatTile(title: "Avg Rating", value: String(format: "%.1f", averageRating), icon: "star.fill", color: DesignSystem.Colors.warning)
+                    }
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+
+                    if items.count > 0 {
+                        VStack(spacing: DesignSystem.Spacing.md) {
+                            Text("Watch Progress")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                            ZStack {
+                                Circle()
+                                    .stroke(DesignSystem.Colors.border, lineWidth: 8)
+                                    .frame(width: 120, height: 120)
+
+                                Circle()
+                                    .trim(from: 0, to: CGFloat(watchedCount) / CGFloat(items.count))
+                                    .stroke(
+                                        DesignSystem.Colors.success,
+                                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                                    )
+                                    .frame(width: 120, height: 120)
+                                    .rotationEffect(.degrees(-90))
+                                    .animation(.easeInOut(duration: 0.8), value: watchedCount)
+
+                                VStack(spacing: 2) {
+                                    Text("\(Int((CGFloat(watchedCount) / CGFloat(items.count)) * 100))%")
+                                        .font(DesignSystem.Typography.title1)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                                    Text("Complete")
+                                        .font(DesignSystem.Typography.caption)
+                                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                                }
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.xl)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(DesignSystem.Colors.surface)
+                        )
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+
+                    Spacer(minLength: DesignSystem.Spacing.xl)
+                }
             }
-        }
-        .frame(width: 60, height: 60)
-        .onAppear {
-            isAnimating = true
+            .background(DesignSystem.Colors.background)
+            .navigationTitle("Statistics")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(DesignSystem.Colors.info)
+                }
+            }
         }
     }
 }
 
-// MARK: - Enhanced Search Result Card
-struct SearchResultCardEnhanced: View {
-    let item: TMDBItem
-    let onAdd: () -> Void
-    @State private var isPressed = false
-    @State private var isAdded = false
-    
+private struct WatchStatTile: View {
+    let title: String
+    let value: String
+    let icon: String
+    let color: Color
+
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: item.posterURL) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [DesignSystem.Colors.backgroundSecondary, DesignSystem.Colors.backgroundTertiary],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .overlay(
-                            VStack(spacing: 4) {
-                                Image(systemName: item.mediaType == "movie" ? "film" : "tv")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(DesignSystem.Colors.textTertiary)
-                                Text(item.mediaType == "movie" ? "Movie" : "TV")
-                                    .font(DesignSystem.Typography.caption)
-                                    .foregroundColor(DesignSystem.Colors.textTertiary)
-                            }
-                        )
-                }
-                .frame(width: 60, height: 90)
-                .cornerRadius(12)
-                .clipped()
-                
-                HStack(spacing: 3) {
-                    Image(systemName: item.mediaType == "movie" ? "film" : "tv")
-                        .font(.system(size: 8, weight: .bold))
-                    Text(item.mediaType == "movie" ? "Movie" : "TV")
-                        .font(.system(size: 8, weight: .bold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(DesignSystem.Colors.textPrimary.opacity(0.8))
-                .cornerRadius(6)
-                .padding(6)
-            }
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item.displayTitle)
-                    .font(DesignSystem.Typography.body)
+        VStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(value)
+                    .font(DesignSystem.Typography.headline)
                     .fontWeight(.bold)
-                    .lineLimit(2)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                    .multilineTextAlignment(.leading)
-                
-                HStack(spacing: 12) {
-                    if item.rating > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(DesignSystem.Colors.warning)
-                            Text(String(format: "%.1f", item.rating))
-                                .font(DesignSystem.Typography.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(DesignSystem.Colors.warning)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(DesignSystem.Colors.warning.opacity(0.1))
-                        .cornerRadius(6)
-                    }
-                    
-                    Spacer()
-                    
-                    if let dateString = item.displayDate {
-                        Text(TMDBService.shared.formatDisplayDate(dateString) ?? "")
-                            .font(DesignSystem.Typography.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(DesignSystem.Colors.textSecondary.opacity(0.1))
-                            .cornerRadius(6)
-                    }
-                }
-                
-                if let overview = item.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
             }
-            
-            Button(action: {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                    onAdd()
-                    isAdded = true
-                    isPressed = true
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    isPressed = false
-                }
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: isAdded ? "checkmark.circle.fill" : "plus.circle.fill")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(isAdded ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                    
-                    Text(isAdded ? "Added!" : "Add")
-                        .font(DesignSystem.Typography.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(isAdded ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                }
-            }
-            .buttonStyle(PlainButtonStyle())
-            .scaleEffect(isPressed ? 0.9 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isPressed)
+            .foregroundColor(color)
+
+            Text(title)
+                .font(DesignSystem.Typography.caption)
+                .foregroundColor(DesignSystem.Colors.textSecondary)
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(DesignSystem.Colors.surface)
-                .shadow(
-                    color: DesignSystem.Shadows.small,
-                    radius: isPressed ? 2 : 6,
-                    x: 0,
-                    y: isPressed ? 1 : 3
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(DesignSystem.Colors.border, lineWidth: 1)
-        )
-        .scaleEffect(isPressed ? 0.98 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isPressed)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .background(color.opacity(0.1))
+        .cornerRadius(10)
     }
 }
 
@@ -1241,52 +1092,42 @@ struct ItemDetailView: View {
     @ObservedObject var item: WantToWatchItem
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
-    @State private var isPressed = false
     @State private var fullDetails: TMDBFullDetails?
     @State private var isLoadingDetails = false
     @State private var loadError: String?
-    
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     VStack(spacing: DesignSystem.Spacing.lg) {
-                        AsyncImage(url: posterURL) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } placeholder: {
-                            Rectangle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [DesignSystem.Colors.backgroundSecondary, DesignSystem.Colors.backgroundTertiary],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .overlay(
-                                    VStack(spacing: 8) {
+                        AsyncImage(url: item.posterURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            default:
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(DesignSystem.Colors.backgroundSecondary)
+                                    .overlay(
                                         Image(systemName: item.isMovie ? "film" : "tv")
-                                            .font(.system(size: 32, weight: .medium))
+                                            .font(.system(size: 32, weight: .light))
                                             .foregroundColor(DesignSystem.Colors.textTertiary)
-                                        Text(item.isMovie ? "Movie" : "TV Show")
-                                            .font(DesignSystem.Typography.headline)
-                                            .foregroundColor(DesignSystem.Colors.textTertiary)
-                                    }
-                                )
+                                    )
+                            }
                         }
-                        .frame(width: 200, height: 300)
-                        .cornerRadius(16)
-                        .clipped()
+                        .frame(width: 180, height: 270)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .shadow(color: DesignSystem.Shadows.medium, radius: 8, x: 0, y: 4)
-                        
+
                         VStack(spacing: DesignSystem.Spacing.md) {
                             Text(item.title ?? "Unknown")
                                 .font(DesignSystem.Typography.largeTitle)
                                 .fontWeight(.bold)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
                                 .multilineTextAlignment(.center)
-                            
+
                             if let tagline = fullDetails?.tagline, !tagline.isEmpty {
                                 Text("\"\(tagline)\"")
                                     .font(DesignSystem.Typography.callout)
@@ -1294,39 +1135,29 @@ struct ItemDetailView: View {
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
                                     .multilineTextAlignment(.center)
                             }
-                            
+
                             HStack(spacing: DesignSystem.Spacing.md) {
                                 if item.rating > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "star.fill")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundColor(DesignSystem.Colors.warning)
-                                        Text(String(format: "%.1f", item.rating))
-                                            .font(DesignSystem.Typography.callout)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(DesignSystem.Colors.warning)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(DesignSystem.Colors.warning.opacity(0.1))
-                                    .cornerRadius(10)
+                                    Label(String(format: "%.1f", item.rating), systemImage: "star.fill")
+                                        .font(DesignSystem.Typography.callout)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(DesignSystem.Colors.warning)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.warning.opacity(0.1))
+                                        .cornerRadius(8)
                                 }
-                                
+
                                 if let runtime = fullDetails?.runtime, runtime > 0 {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "clock")
-                                            .font(.system(size: 12, weight: .medium))
-                                        Text(formatRuntime(runtime))
-                                            .font(DesignSystem.Typography.callout)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(DesignSystem.Colors.backgroundSecondary)
-                                    .cornerRadius(10)
+                                    Label(formatRuntime(runtime), systemImage: "clock")
+                                        .font(DesignSystem.Typography.callout)
+                                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.backgroundSecondary)
+                                        .cornerRadius(8)
                                 }
-                                
+
                                 if let releaseDate = item.releaseDate {
                                     Text(formatYear(releaseDate))
                                         .font(DesignSystem.Typography.callout)
@@ -1335,11 +1166,13 @@ struct ItemDetailView: View {
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 5)
                                         .background(DesignSystem.Colors.backgroundSecondary)
-                                        .cornerRadius(10)
+                                        .cornerRadius(8)
                                 }
                             }
-                            
-                            if !item.isMovie, let seasons = fullDetails?.numberOfSeasons, let episodes = fullDetails?.numberOfEpisodes {
+
+                            if !item.isMovie,
+                               let seasons = fullDetails?.numberOfSeasons,
+                               let episodes = fullDetails?.numberOfEpisodes {
                                 HStack(spacing: DesignSystem.Spacing.md) {
                                     Label("\(seasons) Season\(seasons == 1 ? "" : "s")", systemImage: "tv")
                                     Label("\(episodes) Episodes", systemImage: "play.rectangle.on.rectangle")
@@ -1347,7 +1180,7 @@ struct ItemDetailView: View {
                                 .font(DesignSystem.Typography.caption)
                                 .foregroundColor(DesignSystem.Colors.textSecondary)
                             }
-                            
+
                             if let genres = fullDetails?.genres, !genres.isEmpty {
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 8) {
@@ -1364,37 +1197,44 @@ struct ItemDetailView: View {
                                     }
                                 }
                             }
-                            
-                            HStack(spacing: 6) {
-                                Image(systemName: item.isWatched ? "checkmark.circle.fill" : "clock.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                Text(item.isWatched ? "Watched" : "Up Next")
-                                    .font(DesignSystem.Typography.callout)
-                                    .fontWeight(.semibold)
-                            }
-                            .foregroundColor(item.isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background((item.isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info).opacity(0.1))
-                            .cornerRadius(12)
                         }
                     }
                     .padding(DesignSystem.Spacing.lg)
+                    .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: 20)
                             .fill(DesignSystem.Colors.surface)
-                            .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
                     )
                     .padding(.horizontal, DesignSystem.Spacing.lg)
-                    
+
+                    // Primary watched action — no competing gestures
+                    Button(action: toggleWatchedStatus) {
+                        HStack(spacing: 8) {
+                            Image(systemName: item.isWatched ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 18, weight: .semibold))
+                            Text(item.isWatched ? "Mark as Unwatched" : "Mark as Watched")
+                                .font(DesignSystem.Typography.headline)
+                                .fontWeight(.semibold)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(item.isWatched ? DesignSystem.Colors.error : DesignSystem.Colors.success)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+
                     if let cast = fullDetails?.cast, !cast.isEmpty {
                         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                             Text("Cast")
                                 .font(DesignSystem.Typography.title2)
-                                .fontWeight(.bold)
+                                .fontWeight(.semibold)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
                                 .padding(.horizontal, DesignSystem.Spacing.lg)
-                            
+
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: DesignSystem.Spacing.md) {
                                     ForEach(cast) { actor in
@@ -1405,21 +1245,19 @@ struct ItemDetailView: View {
                             }
                         }
                     }
-                    
+
                     if let directors = fullDetails?.directors, !directors.isEmpty {
                         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                             Text(item.isMovie ? "Director" : "Created By")
                                 .font(DesignSystem.Typography.title2)
-                                .fontWeight(.bold)
+                                .fontWeight(.semibold)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
+
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(directors) { person in
                                     HStack(spacing: 12) {
                                         AsyncImage(url: person.profileURL) { image in
-                                            image
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
+                                            image.resizable().aspectRatio(contentMode: .fill)
                                         } placeholder: {
                                             Circle()
                                                 .fill(DesignSystem.Colors.backgroundSecondary)
@@ -1430,7 +1268,7 @@ struct ItemDetailView: View {
                                         }
                                         .frame(width: 40, height: 40)
                                         .clipShape(Circle())
-                                        
+
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(person.name)
                                                 .font(DesignSystem.Typography.body)
@@ -1445,45 +1283,42 @@ struct ItemDetailView: View {
                             }
                         }
                         .padding(DesignSystem.Spacing.lg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 16)
                                 .fill(DesignSystem.Colors.surface)
-                                .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
                         )
                         .padding(.horizontal, DesignSystem.Spacing.lg)
                     }
-                    
+
                     if let overview = item.overview, !overview.isEmpty {
                         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                             Text("Overview")
                                 .font(DesignSystem.Typography.title2)
-                                .fontWeight(.bold)
+                                .fontWeight(.semibold)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
+
                             Text(overview)
                                 .font(DesignSystem.Typography.body)
                                 .foregroundColor(DesignSystem.Colors.textSecondary)
                                 .lineSpacing(4)
                         }
                         .padding(DesignSystem.Spacing.lg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 16)
                                 .fill(DesignSystem.Colors.surface)
-                                .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
                         )
                         .padding(.horizontal, DesignSystem.Spacing.lg)
                     }
-                    
+
                     if isLoadingDetails {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("Loading details...")
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        }
-                        .padding()
+                        ProgressView("Loading details…")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .padding()
                     }
-                    
+
                     if let loadError, !isLoadingDetails {
                         Text(loadError)
                             .font(DesignSystem.Typography.callout)
@@ -1491,34 +1326,7 @@ struct ItemDetailView: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, DesignSystem.Spacing.lg)
                     }
-                    
-                    VStack(spacing: DesignSystem.Spacing.md) {
-                        Button(action: toggleWatchedStatus) {
-                            HStack(spacing: 8) {
-                                Image(systemName: item.isWatched ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 20, weight: .semibold))
-                                Text(item.isWatched ? "Mark as Unwatched" : "Mark as Watched")
-                                    .font(DesignSystem.Typography.headline)
-                                    .fontWeight(.semibold)
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(item.isWatched ? DesignSystem.Colors.error : DesignSystem.Colors.success)
-                            )
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .scaleEffect(isPressed ? 0.98 : 1.0)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isPressed)
-                        .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
-                        } onPressingChanged: { pressing in
-                            isPressed = pressing
-                        }
-                    }
-                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                    
+
                     Spacer(minLength: DesignSystem.Spacing.xl)
                 }
             }
@@ -1527,10 +1335,8 @@ struct ItemDetailView: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundColor(DesignSystem.Colors.info)
+                    Button("Done") { dismiss() }
+                        .foregroundColor(DesignSystem.Colors.info)
                 }
             }
             .task {
@@ -1538,24 +1344,13 @@ struct ItemDetailView: View {
             }
         }
     }
-    
-    private var posterURL: URL? {
-        guard let posterPath = item.posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(posterPath)")
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
-    }
-    
+
     private func formatYear(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy"
         return formatter.string(from: date)
     }
-    
+
     private func formatRuntime(_ minutes: Int) -> String {
         let hours = minutes / 60
         let mins = minutes % 60
@@ -1564,11 +1359,11 @@ struct ItemDetailView: View {
         }
         return "\(mins)m"
     }
-    
+
     private func loadFullDetails() async {
         guard fullDetails == nil else { return }
         isLoadingDetails = true
-        
+
         do {
             let details = try await TMDBService.shared.fetchFullDetails(
                 id: Int(item.tmdbId),
@@ -1585,19 +1380,14 @@ struct ItemDetailView: View {
             }
         }
     }
-    
+
     private func toggleWatchedStatus() {
         withAnimation(.easeInOut(duration: 0.15)) {
             item.isWatched.toggle()
             item.modifiedDate = Date()
-            
-            if item.isWatched {
-                item.watchedDate = Date()
-            } else {
-                item.watchedDate = nil
-            }
+            item.watchedDate = item.isWatched ? Date() : nil
         }
-        
+
         if !viewContext.inkSlateSave(module: "WantToWatch") {
             wantToWatchLog.error("Save watched status failed")
         }
@@ -1607,13 +1397,11 @@ struct ItemDetailView: View {
 // MARK: - Cast Member Card
 struct CastMemberCard: View {
     let actor: TMDBCastMember
-    
+
     var body: some View {
         VStack(spacing: 8) {
             AsyncImage(url: actor.profileURL) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                image.resizable().aspectRatio(contentMode: .fill)
             } placeholder: {
                 Rectangle()
                     .fill(DesignSystem.Colors.backgroundSecondary)
@@ -1626,7 +1414,7 @@ struct CastMemberCard: View {
             .frame(width: 80, height: 100)
             .cornerRadius(10)
             .clipped()
-            
+
             VStack(spacing: 2) {
                 Text(actor.name)
                     .font(DesignSystem.Typography.caption)
@@ -1634,7 +1422,7 @@ struct CastMemberCard: View {
                     .foregroundColor(DesignSystem.Colors.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                
+
                 if let character = actor.character, !character.isEmpty {
                     Text(character)
                         .font(.system(size: 10))
@@ -1648,345 +1436,7 @@ struct CastMemberCard: View {
     }
 }
 
-// MARK: - Media Category Section
-struct MediaCategorySection: View {
-    let category: String
-    let items: [WantToWatchItem]
-    
-    var categoryTitle: String {
-        switch category {
-        case "anime": return "ANIME"
-        case "cartoon": return "TV"
-        case "tv": return "TV"
-        case "movie": return "Movies"
-        default: return category.capitalized
-        }
-    }
-    
-    var categoryIcon: String {
-        switch category {
-        case "anime": return "sparkles"
-        case "cartoon": return "tv.fill"
-        case "tv": return "tv.fill"
-        case "movie": return "film.fill"
-        default: return "play.circle.fill"
-        }
-    }
-    
-    var categoryColor: Color {
-        switch category {
-        case "anime": return .purple
-        case "cartoon": return DesignSystem.Colors.success
-        case "tv": return DesignSystem.Colors.success
-        case "movie": return DesignSystem.Colors.info
-        default: return DesignSystem.Colors.accent
-        }
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-            HStack(spacing: 8) {
-                Image(systemName: categoryIcon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(categoryColor)
-                
-                Text(categoryTitle)
-                    .font(DesignSystem.Typography.title2)
-                    .fontWeight(.bold)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                
-                Text("\(items.count)")
-                    .font(DesignSystem.Typography.callout)
-                    .fontWeight(.medium)
-                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(categoryColor.opacity(0.1))
-                    .cornerRadius(8)
-                
-                Spacer()
-            }
-            .padding(.horizontal, DesignSystem.Spacing.sm)
-            
-            LazyVStack(spacing: DesignSystem.Spacing.md) {
-                ForEach(Array(items.enumerated()), id: \.element.objectID) { index, item in
-                    WantToWatchItemCardEnhanced(item: item, isWatched: item.isWatched)
-                        .transition(.asymmetric(
-                            insertion: .scale.combined(with: .opacity),
-                            removal: .scale.combined(with: .opacity)
-                        ))
-                        .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(index) * 0.05), value: items)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Enhanced Want to Watch Item Card
-struct WantToWatchItemCardEnhanced: View {
-    @ObservedObject var item: WantToWatchItem
-    let isWatched: Bool
-    @Environment(\.managedObjectContext) private var viewContext
-    @State private var showDelete = false
-    @State private var showDeleteConfirmation = false
-    @State private var isPressed = false
-    @State private var showDetails = false
-    
-    var body: some View {
-        HStack(spacing: 12) {
-                HStack(spacing: 12) {
-                ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: posterURL) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [DesignSystem.Colors.backgroundSecondary, DesignSystem.Colors.backgroundTertiary],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .overlay(
-                                VStack(spacing: 4) {
-                                    Image(systemName: item.isMovie ? "film" : "tv")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(DesignSystem.Colors.textTertiary)
-                                    Text(item.isMovie ? "Movie" : "TV")
-                                        .font(DesignSystem.Typography.caption)
-                                        .foregroundColor(DesignSystem.Colors.textTertiary)
-                                }
-                            )
-                    }
-                    .frame(width: 60, height: 90)
-                    .cornerRadius(12)
-                .clipped()
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(
-                                isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.border,
-                                lineWidth: isWatched ? 2 : 1
-                            )
-                    )
-                    
-                    HStack(spacing: 3) {
-                        Image(systemName: item.isMovie ? "film" : "tv")
-                            .font(.system(size: 8, weight: .bold))
-                        Text(item.isMovie ? "Movie" : "TV")
-                            .font(.system(size: 8, weight: .bold))
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(DesignSystem.Colors.textPrimary.opacity(0.8))
-                    .cornerRadius(6)
-                    .padding(6)
-                
-                if isWatched {
-                        VStack {
-                            Spacer()
-                            HStack {
-                                Spacer()
-                    Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(DesignSystem.Colors.success)
-                                    .background(
-                                        Circle()
-                                            .fill(DesignSystem.Colors.textPrimary.opacity(0.9))
-                                            .frame(width: 22, height: 22)
-                                    )
-                        .padding(4)
-                            }
-                        }
-                }
-            }
-            
-                VStack(alignment: .leading, spacing: 8) {
-                Text(item.title ?? "Unknown")
-                    .font(DesignSystem.Typography.body)
-                    .fontWeight(.bold)
-                    .lineLimit(2)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .multilineTextAlignment(.leading)
-                
-                    HStack(spacing: 12) {
-                    if item.rating > 0 {
-                            HStack(spacing: 4) {
-                            Image(systemName: "star.fill")
-                                    .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(DesignSystem.Colors.warning)
-                            Text(String(format: "%.1f", item.rating))
-                                .font(DesignSystem.Typography.caption)
-                                    .fontWeight(.bold)
-                                .foregroundColor(DesignSystem.Colors.warning)
-                        }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(DesignSystem.Colors.warning.opacity(0.1))
-                            .cornerRadius(6)
-                    }
-                    
-                    Spacer()
-                    
-                    if let releaseDate = item.releaseDate {
-                        Text(formatDate(releaseDate))
-                            .font(DesignSystem.Typography.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(DesignSystem.Colors.textSecondary.opacity(0.1))
-                                .cornerRadius(6)
-                        }
-                    }
-                    
-                    HStack {
-                        HStack(spacing: 4) {
-                            Image(systemName: isWatched ? "checkmark.circle.fill" : "clock.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                            Text(isWatched ? "Watched" : "Up Next")
-                                .font(DesignSystem.Typography.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background((isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info).opacity(0.1))
-                        .cornerRadius(8)
-                        
-                        Spacer()
-                    }
-            }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { showDetails = true }
-            
-                VStack(spacing: 8) {
-                Button(action: toggleWatchedStatus) {
-                    Image(systemName: isWatched ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.textTertiary)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-                    .scaleEffect(isPressed ? 0.9 : 1.0)
-                
-                Button(action: {
-                    showDeleteConfirmation = true
-                }) {
-                    Image(systemName: "trash")
-                            .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(DesignSystem.Colors.error)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-            }
-        }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(DesignSystem.Colors.surface)
-                    .shadow(
-                        color: DesignSystem.Shadows.small,
-                        radius: isPressed ? 2 : 6,
-                        x: 0,
-                        y: isPressed ? 1 : 3
-                    )
-            )
-        .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        isWatched ? DesignSystem.Colors.success.opacity(0.3) : DesignSystem.Colors.border,
-                        lineWidth: 1
-                    )
-            )
-            .scaleEffect(isPressed ? 0.98 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isPressed)
-        .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
-        } onPressingChanged: { pressing in
-            isPressed = pressing
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                showDeleteConfirmation = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .contextMenu {
-            Button(role: .destructive) {
-                showDeleteConfirmation = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .alert("Delete Item", isPresented: $showDeleteConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Delete", role: .destructive) {
-                deleteItem()
-            }
-        } message: {
-            Text("Are you sure you want to delete \"\(item.title ?? "this item")\"? This action cannot be undone.")
-        }
-        .sheet(isPresented: $showDetails) {
-            ItemDetailView(item: item)
-        }
-    }
-    
-    private var posterURL: URL? {
-        guard let posterPath = item.posterPath else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(posterPath)")
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
-    }
-    
-    private func toggleWatchedStatus() {
-        withAnimation(.easeInOut(duration: 0.15)) {
-            item.isWatched.toggle()
-            item.modifiedDate = Date()
-            
-            if item.isWatched {
-                item.watchedDate = Date()
-            } else {
-                item.watchedDate = nil
-            }
-        }
-        
-        _ = viewContext.inkSlateSave(module: "WantToWatch")
-    }
-    
-    private func deleteItem() {
-        withAnimation(.easeInOut(duration: 0.3)) {
-            viewContext.delete(item)
-        }
-
-        _ = viewContext.inkSlateSave(module: "WantToWatch")
-    }
-}
-
-// MARK: - Border Radius Helper
-extension View {
-    func borderRadius(_ radius: CGFloat, border: Color? = nil) -> some View {
-        self
-            .cornerRadius(radius)
-            .overlay(
-                RoundedRectangle(cornerRadius: radius)
-                    .stroke(border ?? Color.clear, lineWidth: 1.5)
-            )
-    }
-}
-
 #Preview {
     WantToWatchMainView()
         .environment(\.managedObjectContext, PersistenceController.shared.container.viewContext)
 }
-

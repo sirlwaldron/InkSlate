@@ -155,6 +155,7 @@ final class FactoryResetService {
         if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
             let docPaths: [(String, Bool)] = [
                 ("profile-user-image.jpg", false),
+                ("home-background.jpg", false),
                 ("RecipeImages", true)
             ]
             for (relative, isDir) in docPaths {

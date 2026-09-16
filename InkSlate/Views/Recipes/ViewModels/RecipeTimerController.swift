@@ -51,15 +51,13 @@ final class RecipeTimerController: ObservableObject {
 
     init() {
         restorePersistedTimers()
-        #if canImport(UIKit)
         backgroundObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.willResignActiveNotification,
+            forName: PlatformLifecycle.willResignActive,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.persistActiveTimers() }
         }
-        #endif
     }
 
     func startTimer(for step: RecipeStep, minutes: Int, notificationContextLabel: String? = nil) {

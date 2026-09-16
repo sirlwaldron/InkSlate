@@ -2,13 +2,59 @@ import SwiftUI
 
 // MARK: - Modern Homescreen Views
 struct ItemsListView: View {
+    @EnvironmentObject private var profileService: ProfileService
+
     var body: some View {
         VStack(spacing: 0) {
             ModernHomeHeader()
 
-            ModernHomeMainView()
+            ModernHomeMainView(usesPhotoBackground: profileService.homeBackgroundImage != nil)
         }
-        .background(DesignSystem.Colors.background)
+        .background {
+            HomeScreenBackgroundView(
+                image: profileService.homeBackgroundImage,
+                scale: profileService.homeBackgroundScale,
+                offsetX: profileService.homeBackgroundOffsetX,
+                offsetY: profileService.homeBackgroundOffsetY
+            )
+        }
+    }
+}
+
+// MARK: - Home Screen Background
+private struct HomeScreenBackgroundView: View {
+    let image: PlatformImage?
+    let scale: Double
+    let offsetX: Double
+    let offsetY: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                DesignSystem.Colors.background
+
+                if let image {
+                    Image(platformImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(scale)
+                        .offset(x: offsetX, y: offsetY)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.28),
+                            Color.black.opacity(0.08),
+                            Color.black.opacity(0.34)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -39,7 +85,7 @@ struct ModernHomeHeader: View {
             }
         }
         .padding(.top, 40)
-        .sheet(isPresented: $showingProfileCustomization) {
+        .inkSlateSheet(isPresented: $showingProfileCustomization) {
             ProfileCustomizationView(profileService: profileService)
         }
     }
@@ -164,12 +210,17 @@ private struct ModernDailyQuoteCard: View {
 
 // MARK: - Modern Home Main View
 struct ModernHomeMainView: View {
+    var usesPhotoBackground: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
             TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                ModernBottomTimeDisplay(currentTime: context.date)
+                ModernBottomTimeDisplay(
+                    currentTime: context.date,
+                    usesPhotoBackground: usesPhotoBackground
+                )
             }
         }
     }
@@ -178,6 +229,7 @@ struct ModernHomeMainView: View {
 // MARK: - Modern Bottom Time Display
 struct ModernBottomTimeDisplay: View {
     let currentTime: Date
+    var usesPhotoBackground: Bool = false
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -195,11 +247,13 @@ struct ModernBottomTimeDisplay: View {
         VStack(spacing: DesignSystem.Spacing.sm) {
             Text(Self.timeFormatter.string(from: currentTime))
                 .font(.system(size: 22, weight: .medium))
-                .foregroundColor(DesignSystem.Colors.textPrimary)
+                .foregroundColor(usesPhotoBackground ? .white : DesignSystem.Colors.textPrimary)
+                .shadow(color: usesPhotoBackground ? .black.opacity(0.35) : .clear, radius: 4, x: 0, y: 1)
 
             Text(Self.dateFormatter.string(from: currentTime))
                 .font(.system(size: 16, weight: .regular))
-                .foregroundColor(DesignSystem.Colors.textSecondary)
+                .foregroundColor(usesPhotoBackground ? .white.opacity(0.88) : DesignSystem.Colors.textSecondary)
+                .shadow(color: usesPhotoBackground ? .black.opacity(0.3) : .clear, radius: 3, x: 0, y: 1)
         }
         .padding(.horizontal, DesignSystem.Spacing.lg)
         .padding(.bottom, DesignSystem.Spacing.xl)

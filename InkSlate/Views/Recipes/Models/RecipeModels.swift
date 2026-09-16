@@ -81,24 +81,38 @@ enum SortOption: String, CaseIterable {
 
 // MARK: - Recipe Ingredient Data
 
-struct RecipeIngredientData: Codable, Identifiable {
+struct RecipeIngredientData: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
     var amount: String
     var unit: String
     var isChecked: Bool = false
     
-    init(id: UUID = UUID(), name: String, amount: String, unit: String) {
+    init(id: UUID = UUID(), name: String = "", amount: String = "", unit: String = "") {
         self.id = id
         self.name = name
         self.amount = amount
         self.unit = unit
     }
+    
+    /// Combined amount + unit for display; empty when neither is set.
+    var quantityLabel: String {
+        let trimmedAmount = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUnit = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedAmount.isEmpty && trimmedUnit.isEmpty { return "" }
+        if trimmedAmount.isEmpty { return trimmedUnit }
+        if trimmedUnit.isEmpty { return trimmedAmount }
+        return "\(trimmedAmount) \(trimmedUnit)"
+    }
+    
+    var hasName: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 // MARK: - Recipe Step
 
-struct RecipeStep: Codable, Identifiable {
+struct RecipeStep: Codable, Identifiable, Equatable {
     let id: UUID
     var instruction: String
     var timerMinutes: Int?

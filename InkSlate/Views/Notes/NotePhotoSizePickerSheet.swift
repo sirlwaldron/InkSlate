@@ -68,8 +68,10 @@ struct NotePhotoSizePickerSheet: View {
                 }
             }
             .navigationTitle("Image size")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
+            #if os(iOS)
             .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {

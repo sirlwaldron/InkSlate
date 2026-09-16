@@ -140,8 +140,15 @@ final class CloudKitAssetService {
             let database = container.privateCloudDatabase
             try await zoneGate.ensureExists(database: database, zoneName: Self.placePhotosZoneName, logger: logger)
 
-            let recordID = CKRecord.ID(recordName: "PlacePhoto-\(placeID.uuidString)", zoneID: placePhotosZoneID)
-            let record = CKRecord(recordType: "PlacePhoto", recordID: recordID)
+            // Stable per-place ID so re-saves upsert instead of failing with serverRecordChanged
+            // or leaving orphan PlacePhoto records behind.
+            let recordName = "PlacePhoto-\(placeID.uuidString)"
+            let recordID = CKRecord.ID(recordName: recordName, zoneID: placePhotosZoneID)
+            let record = try await fetchOrCreateRecord(
+                database: database,
+                recordID: recordID,
+                recordType: "PlacePhoto"
+            )
             record["photo"] = asset
             record["placeID"] = placeID.uuidString
 
@@ -151,10 +158,10 @@ final class CloudKitAssetService {
 
             if let photoAsset = savedRecord["photo"] as? CKAsset,
                photoAsset.fileURL != nil {
-                return recordID.recordName
+                return recordName
             }
 
-            return recordID.recordName
+            return recordName
         } catch {
             try? FileManager.default.removeItem(at: tempURL)
             logger.error("Failed to upload photo: \(error.localizedDescription)")
@@ -257,14 +264,20 @@ final class CloudKitAssetService {
             let database = container.privateCloudDatabase
             try await zoneGate.ensureExists(database: database, zoneName: Self.recipePhotosZoneName, logger: logger)
 
-            let recordID = CKRecord.ID(recordName: "RecipePhoto-\(recipeID.uuidString)", zoneID: recipePhotosZoneID)
-            let record = CKRecord(recordType: "RecipePhoto", recordID: recordID)
+            // Stable per-recipe ID so updating a cover photo upserts the existing record.
+            let recordName = "RecipePhoto-\(recipeID.uuidString)"
+            let recordID = CKRecord.ID(recordName: recordName, zoneID: recipePhotosZoneID)
+            let record = try await fetchOrCreateRecord(
+                database: database,
+                recordID: recordID,
+                recordType: "RecipePhoto"
+            )
             record["photo"] = asset
             record["recipeID"] = recipeID.uuidString
 
             _ = try await database.save(record)
             try? FileManager.default.removeItem(at: tempURL)
-            return recordID.recordName
+            return recordName
         } catch {
             try? FileManager.default.removeItem(at: tempURL)
             logger.error("Failed to upload recipe photo: \(error.localizedDescription)")
@@ -359,13 +372,11 @@ final class CloudKitAssetService {
         } catch {
             failures.append("recipe photos: \(error.localizedDescription)")
         }
-        #if canImport(UIKit)
         do {
             try await deleteAllNotePhotos()
         } catch {
             failures.append("note photos: \(error.localizedDescription)")
         }
-        #endif
         do {
             try await deleteAllNoteAttachments()
         } catch {
@@ -382,7 +393,6 @@ final class CloudKitAssetService {
 
     // MARK: - Note inline photos
 
-    #if canImport(UIKit)
     /// Uploads a JPEG for an inline note image; returns the CloudKit record name (`NotePhoto-{uuid}`)
     func uploadNotePhoto(_ image: PlatformImage, noteID: UUID, attachmentID: UUID) async throws -> String {
         let tempURL: URL = try await withCheckedThrowingContinuation { continuation in
@@ -412,7 +422,11 @@ final class CloudKitAssetService {
             try await zoneGate.ensureExists(database: database, zoneName: Self.notePhotosZoneName, logger: logger)
 
             let recordID = CKRecord.ID(recordName: recordName, zoneID: notePhotosZoneID)
-            let record = CKRecord(recordType: "NotePhoto", recordID: recordID)
+            let record = try await fetchOrCreateRecord(
+                database: database,
+                recordID: recordID,
+                recordType: "NotePhoto"
+            )
             record["photo"] = asset
             record["noteID"] = noteID.uuidString
 
@@ -519,8 +533,7 @@ final class CloudKitAssetService {
     func deleteAllNotePhotos() async throws {
         try await deleteZone(zoneName: Self.notePhotosZoneName)
     }
-    #endif
-    
+
     // MARK: - Note attachments (share import)
     
     /// Uploads a file as a CloudKit asset tied to a note; returns the record name (`NoteAttachment-{uuid}`)
@@ -696,6 +709,19 @@ final class CloudKitAssetService {
             throw CloudKitAssetError.imageLoadFailed
         }
         return image
+    }
+
+    /// Fetches an existing record for update, or creates a new one when missing.
+    private func fetchOrCreateRecord(
+        database: CKDatabase,
+        recordID: CKRecord.ID,
+        recordType: String
+    ) async throws -> CKRecord {
+        do {
+            return try await database.record(for: recordID)
+        } catch let error as CKError where error.code == .unknownItem {
+            return CKRecord(recordType: recordType, recordID: recordID)
+        }
     }
 
 }

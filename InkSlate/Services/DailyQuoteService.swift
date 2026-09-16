@@ -11,6 +11,7 @@ class DailyQuoteService: ObservableObject {
     private let cloudStore = NSUbiquitousKeyValueStore.default
     private let lastQuoteDateKey = "lastQuoteDate"
     private let currentQuoteIdKey = "currentQuoteId"
+    private var cloudStoreObserver: NSObjectProtocol?
     
     private let quotes = [
         DailyQuote(text: "You only live once, but if you do it right, once is enough.", author: "Mae West", category: "Life"),
@@ -622,21 +623,20 @@ class DailyQuoteService: ObservableObject {
     }
     
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        if let cloudStoreObserver {
+            NotificationCenter.default.removeObserver(cloudStoreObserver)
+        }
     }
     
     private func setupCloudStoreObserver() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(cloudStoreDidChange),
-            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloudStore
-        )
-    }
-    
-    @objc private func cloudStoreDidChange(_ notification: Notification) {
-        Task { @MainActor [weak self] in
-            self?.loadDailyQuote()
+        cloudStoreObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloudStore,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.loadDailyQuote()
+            }
         }
     }
     

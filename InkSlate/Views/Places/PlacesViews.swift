@@ -84,10 +84,17 @@ private func inferredPlaceType(for place: Place, uncategorizedAs defaultTab: Pla
 
 fileprivate func getOrCreateUncategorizedPlaceCategory(for type: PlaceType, context: NSManagedObjectContext) -> PlaceCategory {
     let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
-    fetch.fetchLimit = 1
     fetch.predicate = NSPredicate(format: "sortOrder == %d AND type == %@", -1, type.rawValue)
-    if let existing = try? context.fetch(fetch).first {
-        return existing
+    fetch.sortDescriptors = [
+        NSSortDescriptor(key: "createdDate", ascending: true),
+        NSSortDescriptor(key: "name", ascending: true)
+    ]
+    let matches = (try? context.fetch(fetch)) ?? []
+    if let keeper = matches.first {
+        if matches.count > 1 {
+            mergeDuplicateUncategorizedCategories(keeper: keeper, duplicates: Array(matches.dropFirst()), context: context)
+        }
+        return keeper
     }
     
     let category = PlaceCategory(context: context)
@@ -102,6 +109,39 @@ fileprivate func getOrCreateUncategorizedPlaceCategory(for type: PlaceType, cont
     context.insert(category)
     context.saveQuietly(module: "Places")
     return category
+}
+
+fileprivate func mergeDuplicateUncategorizedCategories(
+    keeper: PlaceCategory,
+    duplicates: [PlaceCategory],
+    context: NSManagedObjectContext
+) {
+    guard !duplicates.isEmpty else { return }
+    for dup in duplicates {
+        if let places = dup.places as? Set<Place> {
+            for place in places {
+                place.category = keeper
+                place.modifiedDate = Date()
+            }
+        }
+        context.delete(dup)
+    }
+    keeper.modifiedDate = Date()
+    context.saveQuietly(module: "Places")
+}
+
+fileprivate func deduplicateUncategorizedPlaceCategories(in context: NSManagedObjectContext) {
+    for type in PlaceType.allCases {
+        let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
+        fetch.predicate = NSPredicate(format: "sortOrder == %d AND type == %@", -1, type.rawValue)
+        fetch.sortDescriptors = [
+            NSSortDescriptor(key: "createdDate", ascending: true),
+            NSSortDescriptor(key: "name", ascending: true)
+        ]
+        let matches = (try? context.fetch(fetch)) ?? []
+        guard let keeper = matches.first, matches.count > 1 else { continue }
+        mergeDuplicateUncategorizedCategories(keeper: keeper, duplicates: Array(matches.dropFirst()), context: context)
+    }
 }
 
 // MARK: - Date Formatter
@@ -138,7 +178,6 @@ struct PlacesMainView: View {
     
     @State private var editingCategory: PlaceCategory?
     @State private var categoryToDelete: PlaceCategory?
-    @State private var showingDeleteCategoryConfirmation = false
     
     private func filteredCategories(for type: PlaceType) -> [PlaceCategory] {
         Array(allCategories).filter { category in
@@ -154,48 +193,60 @@ struct PlacesMainView: View {
     }
     
     var body: some View {
-        ZStack {
-            DesignSystem.Colors.background.ignoresSafeArea()
-            
-            ScrollView(showsIndicators: false) {
-        VStack(spacing: 0) {
-                    headerSection
-                    
-                    statsSection
-                        .padding(.top, DesignSystem.Spacing.lg)
-                    
-                    typeSelector
-                        .padding(.top, DesignSystem.Spacing.xl)
-                    
-                    categoriesSection
-                        .padding(.top, DesignSystem.Spacing.lg)
+        // Own stack so map/category pushes don't stick on ContentView's outer NavigationStack.
+        NavigationStack {
+            ZStack {
+                DesignSystem.Colors.background.ignoresSafeArea()
+                
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        headerSection
+                        
+                        statsSection
+                            .padding(.top, DesignSystem.Spacing.lg)
+                        
+                        typeSelector
+                            .padding(.top, DesignSystem.Spacing.xl)
+                        
+                        categoriesSection
+                            .padding(.top, DesignSystem.Spacing.lg)
+                    }
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.bottom, 100)
                 }
-                .padding(.horizontal, DesignSystem.Spacing.lg)
-                .padding(.bottom, 100)
             }
-        }
-        .sheet(isPresented: $showingQuickAdd) {
-            QuickAddPlaceView(type: selectedTab)
-        }
-        .sheet(item: $editingCategory) { category in
-            EditPlaceCategoryView(category: category, type: selectedTab)
-        }
-        .alert("Delete Category and Places?", isPresented: $showingDeleteCategoryConfirmation) {
-            Button("Cancel", role: .cancel) { categoryToDelete = nil }
-            Button("Delete", role: .destructive) {
-                if let category = categoryToDelete {
+            .inkSlateSheet(isPresented: $showingQuickAdd) {
+                QuickAddPlaceView(type: selectedTab)
+            }
+            .inkSlateSheet(item: $editingCategory) { category in
+                EditPlaceCategoryView(category: category, type: selectedTab)
+            }
+            .alert(
+                "Delete Category and Places?",
+                isPresented: Binding(
+                    get: { categoryToDelete != nil },
+                    set: { if !$0 { categoryToDelete = nil } }
+                ),
+                presenting: categoryToDelete
+            ) { category in
+                Button("Cancel", role: .cancel) { categoryToDelete = nil }
+                Button("Delete", role: .destructive) {
                     deleteCategory(category, for: selectedTab)
+                    categoryToDelete = nil
                 }
-                categoryToDelete = nil
+            } message: { category in
+                let name = (category.name ?? "This category").trimmingCharacters(in: .whitespacesAndNewlines)
+                let count = category.places?.count ?? 0
+                Text("This will permanently delete '\(name.isEmpty ? "Untitled" : name)' and \(count) place\(count == 1 ? "" : "s") inside it. This can’t be undone.")
             }
-        } message: {
-            let name = (categoryToDelete?.name ?? "This category").trimmingCharacters(in: .whitespacesAndNewlines)
-            let count = categoryToDelete?.places?.count ?? 0
-            Text("This will permanently delete '\(name.isEmpty ? "Untitled" : name)' and \(count) place\(count == 1 ? "" : "s") inside it. This can’t be undone.")
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.6)) {
-                animateHeader = true
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.6)) {
+                    animateHeader = true
+                }
+                deduplicateUncategorizedPlaceCategories(in: viewContext)
+                Task {
+                    await PlaceImageStore.migrateLocalPhotosToCloudKit(in: viewContext)
+                }
             }
         }
     }
@@ -215,6 +266,20 @@ struct PlacesMainView: View {
                 }
                 
                 Spacer()
+                
+                NavigationLink {
+                    PlacesMapView()
+                } label: {
+                    Image(systemName: "map")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.accent)
+                        .frame(width: 36, height: 36)
+                        .background(DesignSystem.Colors.surface)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(DesignSystem.Colors.border, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, DesignSystem.Spacing.sm)
                 
                 Button {
                     lightHaptic()
@@ -382,7 +447,8 @@ struct PlacesMainView: View {
                         .buttonStyle(ScaleButtonStyle())
                         .contextMenu {
                             Button {
-                                DispatchQueue.main.async {
+                                // Delay so the context menu finishes dismissing before the sheet presents.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                     editingCategory = category
                                 }
                             } label: {
@@ -390,22 +456,14 @@ struct PlacesMainView: View {
                             }
                             
                             Button(role: .destructive) {
-                                DispatchQueue.main.async {
-                                    if category.sortOrder != -1 {
-                                        categoryToDelete = category
-                                        showingDeleteCategoryConfirmation = true
-                                    }
+                                // Delay so the context menu finishes dismissing before the alert presents.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    categoryToDelete = category
                                 }
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        .simultaneousGesture(
-                            LongPressGesture(minimumDuration: 0.4).onEnded { _ in
-                                lightHaptic()
-                                editingCategory = category
-                            }
-                        )
                     }
                     
                     AddCategoryCard(type: selectedTab)
@@ -420,15 +478,16 @@ struct PlacesMainView: View {
 
 private extension PlacesMainView {
     func deleteCategory(_ category: PlaceCategory, for type: PlaceType) {
-        guard category.sortOrder != -1 else { return }
         mediumHaptic()
-        viewContext.perform {
-            self.viewContext.delete(category)
-            do {
-                try self.viewContext.saveWithCloudKitSync()
-            } catch {
+        let fetch = NSFetchRequest<Place>(entityName: "Place")
+        fetch.predicate = NSPredicate(format: "category == %@", category)
+        if let places = try? viewContext.fetch(fetch) {
+            for place in places {
+                viewContext.delete(place)
             }
         }
+        viewContext.delete(category)
+        _ = viewContext.inkSlateSave(module: "Places")
     }
     
     func getOrCreateUncategorizedCategory(for type: PlaceType) -> PlaceCategory {
@@ -487,7 +546,7 @@ private struct CategoryContextMenuEditButton: View {
         } label: {
             Label("Edit", systemImage: "pencil")
         }
-        .sheet(isPresented: $showingEdit) {
+        .inkSlateSheet(isPresented: $showingEdit) {
             EditPlaceCategoryView(category: category, type: type)
         }
     }
@@ -651,7 +710,7 @@ struct AddCategoryCard: View {
                     .foregroundColor(DesignSystem.Colors.border)
             )
         }
-        .sheet(isPresented: $showingNewCategory) {
+        .inkSlateSheet(isPresented: $showingNewCategory) {
             NewCategoryView(type: type)
         }
     }
@@ -693,7 +752,7 @@ struct EmptyCategoriesView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, DesignSystem.Spacing.xxl)
-        .sheet(isPresented: $showingNewCategory) {
+        .inkSlateSheet(isPresented: $showingNewCategory) {
             NewCategoryView(type: type)
         }
     }
@@ -706,6 +765,7 @@ struct AllCategoriesView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @State private var showingNewCategory = false
     @State private var editingCategory: PlaceCategory?
+    @State private var categoryToDelete: PlaceCategory?
     
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \Place.name, ascending: true)]
@@ -731,7 +791,8 @@ struct AllCategoriesView: View {
                             )
                             .contextMenu {
                                 Button {
-                                    DispatchQueue.main.async {
+                                    // Delay so the context menu finishes dismissing before the sheet presents.
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                         editingCategory = category
                                     }
                                 } label: {
@@ -739,7 +800,10 @@ struct AllCategoriesView: View {
                                 }
                                 
                                 Button(role: .destructive) {
-                                    deleteCategory(category)
+                                    // Delay so the context menu finishes dismissing before the alert presents.
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        categoryToDelete = category
+                                    }
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -763,46 +827,47 @@ struct AllCategoriesView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingNewCategory) {
+        .inkSlateSheet(isPresented: $showingNewCategory) {
             NewCategoryView(type: type)
         }
-        .sheet(item: $editingCategory) { category in
+        .inkSlateSheet(item: $editingCategory) { category in
             EditPlaceCategoryView(category: category, type: type)
+        }
+        .alert(
+            "Delete Category and Places?",
+            isPresented: Binding(
+                get: { categoryToDelete != nil },
+                set: { if !$0 { categoryToDelete = nil } }
+            ),
+            presenting: categoryToDelete
+        ) { category in
+            Button("Cancel", role: .cancel) { categoryToDelete = nil }
+            Button("Delete", role: .destructive) {
+                deleteCategory(category)
+                categoryToDelete = nil
+            }
+        } message: { category in
+            let name = (category.name ?? "This category").trimmingCharacters(in: .whitespacesAndNewlines)
+            let count = category.places?.count ?? 0
+            Text("This will permanently delete '\(name.isEmpty ? "Untitled" : name)' and \(count) place\(count == 1 ? "" : "s") inside it. This can’t be undone.")
         }
     }
     
     private func deleteCategory(_ category: PlaceCategory) {
-        guard category.sortOrder != -1 else { return }
         mediumHaptic()
-        viewContext.perform {
-            self.viewContext.delete(category)
-            do {
-                try self.viewContext.saveWithCloudKitSync()
-            } catch {
+        let fetch = NSFetchRequest<Place>(entityName: "Place")
+        fetch.predicate = NSPredicate(format: "category == %@", category)
+        if let places = try? viewContext.fetch(fetch) {
+            for place in places {
+                viewContext.delete(place)
             }
         }
+        viewContext.delete(category)
+        _ = viewContext.inkSlateSave(module: "Places")
     }
     
     private func getOrCreateUncategorizedCategory() -> PlaceCategory {
-        let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
-        fetch.fetchLimit = 1
-        fetch.predicate = NSPredicate(format: "sortOrder == %d AND type == %@", -1, type.rawValue)
-        if let existing = try? viewContext.fetch(fetch).first {
-            return existing
-        }
-        
-        let category = PlaceCategory(context: viewContext)
-        category.id = UUID()
-        category.name = "Uncategorized"
-        category.type = type.rawValue
-        category.icon = "tray"
-        category.color = "#6B7280"
-        category.sortOrder = -1
-        category.createdDate = Date()
-        category.modifiedDate = Date()
-        viewContext.insert(category)
-        viewContext.saveQuietly(module: "Places")
-        return category
+        getOrCreateUncategorizedPlaceCategory(for: type, context: viewContext)
     }
 }
 
@@ -878,17 +943,18 @@ struct NewCategoryView: View {
     
     private func createCategory() {
         lightHaptic()
-                        let category = PlaceCategory(context: viewContext)
-                        category.name = categoryName
-                        category.id = UUID()
-                        category.createdDate = Date()
-                        category.modifiedDate = Date()
-                        category.icon = type.icon
-                        category.type = type.rawValue
+        let category = PlaceCategory(context: viewContext)
+        category.name = categoryName
+        category.id = UUID()
+        category.createdDate = Date()
+        category.modifiedDate = Date()
+        category.icon = type.icon
+        category.type = type.rawValue
+        category.sortOrder = 0
         
-                        if viewContext.inkSlateSave(module: "Places") {
-                            dismiss()
-                        }
+        if viewContext.inkSlateSave(module: "Places") {
+            dismiss()
+        }
     }
 }
 
@@ -1031,9 +1097,6 @@ private struct EditPlaceCategoryView: View {
                     .fontWeight(.semibold)
                 }
             }
-            .onAppear {
-                isNameFocused = true
-            }
             .alert("Delete Category and Places?", isPresented: $showingDeleteConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) {
@@ -1056,9 +1119,7 @@ private struct EditPlaceCategoryView: View {
         dismiss()
     }
     
-    private var canDeleteCategory: Bool {
-        category.sortOrder != -1
-    }
+    private var canDeleteCategory: Bool { true }
 
     private func placeCountInCategory() -> Int {
         let fetch = NSFetchRequest<Place>(entityName: "Place")
@@ -1067,18 +1128,16 @@ private struct EditPlaceCategoryView: View {
     }
     
     private func deleteCategory() {
-        guard canDeleteCategory else { return }
-
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
         if let places = try? viewContext.fetch(fetch) {
-            for p in places {
-                viewContext.delete(p)
+            for place in places {
+                viewContext.delete(place)
             }
         }
-        
+
         viewContext.delete(category)
-        viewContext.saveQuietly(module: "Places")
+        _ = viewContext.inkSlateSave(module: "Places")
         dismiss()
     }
     
@@ -1661,15 +1720,15 @@ struct PlacesListView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingEditCategory) {
+        .inkSlateSheet(isPresented: $showingEditCategory) {
             if let category {
                 EditPlaceCategoryView(category: category, type: type)
             }
         }
-        .sheet(isPresented: $showingNewPlace) {
+        .inkSlateSheet(isPresented: $showingNewPlace) {
             PlaceEditorView(category: category, place: nil, type: type)
         }
-        .sheet(item: $selectedPlace) { place in
+        .inkSlateSheet(item: $selectedPlace) { place in
             PlaceDetailView(place: place)
         }
     }
@@ -1827,8 +1886,10 @@ struct PlaceCard: View {
     @MainActor
     private func loadPhoto() async {
         guard let photoURL = place.photoURL else { return }
-        if photoImage != nil { return }
-        let image = try? await CloudKitAssetService.shared.downloadPhoto(recordName: photoURL)
+        if photoImage == nil {
+            photoImage = PlaceImageStore.cachedImage(path: photoURL)
+        }
+        let image = await PlaceImageStore.loadDisplayImage(path: photoURL)
         if Task.isCancelled { return }
         photoImage = image
     }
@@ -1923,6 +1984,10 @@ struct PlaceDetailView: View {
                             DetailsSectionView(place: place)
                         }
                         
+                        if let videoURL = place.videoURL, !videoURL.isEmpty {
+                            VideoLinkButton(rawURL: videoURL)
+                        }
+                        
                     if place.isVisited {
                             RatingSectionView(place: place)
                         }
@@ -1951,7 +2016,7 @@ struct PlaceDetailView: View {
                     .fontWeight(.medium)
                 }
             }
-            .sheet(isPresented: $showingEditSheet) {
+            .inkSlateSheet(isPresented: $showingEditSheet) {
                 PlaceEditorView(category: place.category, place: place, type: inferredPlaceType(for: place))
             }
             .task(id: place.photoURL) {
@@ -1976,8 +2041,10 @@ struct PlaceDetailView: View {
     @MainActor
     private func loadPhoto() async {
         guard let photoURL = place.photoURL else { return }
-        if photoImage != nil { return }
-        let image = try? await CloudKitAssetService.shared.downloadPhoto(recordName: photoURL)
+        if photoImage == nil {
+            photoImage = PlaceImageStore.cachedImage(path: photoURL)
+        }
+        let image = await PlaceImageStore.loadDisplayImage(path: photoURL)
         if Task.isCancelled { return }
         photoImage = image
     }
@@ -2220,6 +2287,8 @@ struct PlaceEditorView: View {
     @State private var name = ""
     @State private var location = ""
     @State private var address = ""
+    @State private var latitude: Double = 0
+    @State private var longitude: Double = 0
     @State private var priceRange = ""
     @State private var cuisineType = ""
     @State private var bestTimeToGo = ""
@@ -2227,6 +2296,7 @@ struct PlaceEditorView: View {
     @State private var entryFee = ""
     @State private var notes = ""
     @State private var dishRecommendations = ""
+    @State private var videoURL = ""
     @State private var hasVisited = false
     @State private var isFavorite = false
     @State private var wouldReturn = true
@@ -2238,6 +2308,9 @@ struct PlaceEditorView: View {
     @State private var sceneryRating: Double = 5
     @State private var selectedImage: PlatformImage?
     @State private var showingImagePicker = false
+    @State private var photoChanged = false
+    @State private var photoRemoved = false
+    @State private var existingPhotoURL: String?
     @State private var selectedCategory: PlaceCategory?
     @State private var dateVisited = Date()
     @State private var isSaving = false
@@ -2311,6 +2384,8 @@ struct PlaceEditorView: View {
         selectedCategory = place.category ?? category
         name = place.name ?? ""
         address = place.address ?? ""
+        latitude = place.latitude
+        longitude = place.longitude
         notes = place.notes ?? ""
         hasVisited = place.isVisited
         isFavorite = place.isFavorite
@@ -2323,12 +2398,16 @@ struct PlaceEditorView: View {
         whoToBring = place.whoToBring ?? ""
         entryFee = place.entryFee ?? ""
         dishRecommendations = place.dishRecommendations ?? ""
+        videoURL = place.videoURL ?? ""
         wouldReturn = place.wouldReturn
         priceRating = Double(place.priceRating)
         qualityRating = Double(place.qualityRating)
         atmosphereRating = Double(place.atmosphereRating)
         funFactorRating = Double(place.funFactorRating)
         sceneryRating = Double(place.sceneryRating)
+        existingPhotoURL = place.photoURL
+        photoChanged = false
+        photoRemoved = false
         
         hasLoadedInitialValues = true
     }
@@ -2386,8 +2465,18 @@ struct PlaceEditorView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingImagePicker) {
-                ImagePicker(image: $selectedImage)
+            .inkSlateSheet(isPresented: $showingImagePicker) {
+                ImagePicker(image: Binding(
+                    get: { selectedImage },
+                    set: { newImage in
+                        selectedImage = newImage
+                        if newImage != nil {
+                            photoChanged = true
+                            photoRemoved = false
+                            hasUserEdits = true
+                        }
+                    }
+                ))
             }
             .task(id: place?.objectID) {
                 loadDraftFromPlaceIfNeeded()
@@ -2399,8 +2488,10 @@ struct PlaceEditorView: View {
                 }
             }
             .task(id: place?.photoURL) {
+                guard !photoChanged, !photoRemoved else { return }
                 if let place = place, let photoURL = place.photoURL, selectedImage == nil {
-                    selectedImage = try? await CloudKitAssetService.shared.downloadPhoto(recordName: photoURL)
+                    selectedImage = await PlaceImageStore.loadDisplayImage(path: photoURL)
+                    existingPhotoURL = photoURL
                 }
             }
             .onAppear {
@@ -2425,42 +2516,63 @@ struct PlaceEditorView: View {
                 .font(DesignSystem.Typography.caption)
                 .foregroundColor(DesignSystem.Colors.textSecondary)
             
-            Button {
-                showingImagePicker = true
-            } label: {
-                    if let image = selectedImage {
+            ZStack(alignment: .topTrailing) {
+                Button {
+                    showingImagePicker = true
+                } label: {
+                    if let image = selectedImage, !photoRemoved {
                         Image(platformImage: image)
                             .resizable()
-                        .scaledToFill()
-                        .frame(height: 180)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-                        .cornerRadius(DesignSystem.CornerRadius.lg)
-                        .overlay(
-                            ZStack {
-                                Color.black.opacity(0.3)
+                            .scaledToFill()
+                            .frame(height: 180)
+                            .frame(maxWidth: .infinity)
+                            .clipped()
+                            .cornerRadius(DesignSystem.CornerRadius.lg)
+                            .overlay(
+                                ZStack {
+                                    Color.black.opacity(0.3)
+                                    Image(systemName: "camera.fill")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(.white)
+                                }
+                                .cornerRadius(DesignSystem.CornerRadius.lg)
+                                .opacity(0.7)
+                            )
+                    } else {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                                .fill(DesignSystem.Colors.backgroundSecondary)
+                                .frame(height: 120)
+                            
+                            VStack(spacing: DesignSystem.Spacing.sm) {
                                 Image(systemName: "camera.fill")
                                     .font(.system(size: 24))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(DesignSystem.Colors.textTertiary)
+                                Text("Add Photo")
+                                    .font(DesignSystem.Typography.caption)
+                                    .foregroundColor(DesignSystem.Colors.textTertiary)
                             }
-                            .cornerRadius(DesignSystem.CornerRadius.lg)
-                            .opacity(0.7)
-                        )
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
-                            .fill(DesignSystem.Colors.backgroundSecondary)
-                            .frame(height: 120)
-                        
-                        VStack(spacing: DesignSystem.Spacing.sm) {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 24))
-                                .foregroundColor(DesignSystem.Colors.textTertiary)
-                            Text("Add Photo")
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundColor(DesignSystem.Colors.textTertiary)
                         }
                     }
+                }
+                .buttonStyle(.plain)
+                
+                if selectedImage != nil, !photoRemoved {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedImage = nil
+                            photoRemoved = true
+                            photoChanged = false
+                            hasUserEdits = true
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white, .black.opacity(0.55))
+                            .padding(DesignSystem.Spacing.sm)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove photo")
                 }
             }
         }
@@ -2474,9 +2586,45 @@ struct PlaceEditorView: View {
                 .foregroundColor(DesignSystem.Colors.textPrimary)
             
             VStack(spacing: DesignSystem.Spacing.md) {
-                EditorTextField(title: "Name", placeholder: "Place name", text: dirty($name))
+                AddressAutocompleteField(
+                    title: "Name",
+                    placeholder: "Search a place or type a name",
+                    text: $name,
+                    mode: .placeName,
+                    onResolved: { resolved in
+                        hasUserEdits = true
+                        address = resolved.address
+                        latitude = resolved.coordinate.latitude
+                        longitude = resolved.coordinate.longitude
+                        if let city = resolved.city, !city.isEmpty {
+                            location = city
+                        }
+                    },
+                    onManualEdit: {
+                        // A typed name is just a label; keep any existing coordinates.
+                        hasUserEdits = true
+                    }
+                )
                 EditorTextField(title: "Location/City", placeholder: "City or region", text: dirty($location))
-                EditorTextField(title: "Address", placeholder: "Full address", text: dirty($address))
+                AddressAutocompleteField(
+                    title: "Address",
+                    placeholder: "Search for an address",
+                    text: $address,
+                    onResolved: { resolved in
+                        hasUserEdits = true
+                        latitude = resolved.coordinate.latitude
+                        longitude = resolved.coordinate.longitude
+                        if let city = resolved.city, !city.isEmpty, location.isEmpty {
+                            location = city
+                        }
+                    },
+                    onManualEdit: {
+                        hasUserEdits = true
+                        // Typed edits invalidate the old pin; background geocoding re-locates it.
+                        latitude = 0
+                        longitude = 0
+                    }
+                )
                 
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("Category")
@@ -2570,6 +2718,13 @@ struct PlaceEditorView: View {
                         if type != .restaurant {
                     EditorTextField(title: "Entry Fee", placeholder: "Free, $10, etc.", text: dirty($entryFee))
                 }
+                
+                EditorTextField(
+                    title: "Video Link",
+                    placeholder: "TikTok or YouTube URL",
+                    text: dirty($videoURL),
+                    isURL: true
+                )
             }
             .padding(DesignSystem.Spacing.md)
             .background(DesignSystem.Colors.surface)
@@ -2701,6 +2856,8 @@ struct PlaceEditorView: View {
         if let existingPlace = place {
             existingPlace.name = resolvedName
             existingPlace.address = address
+            existingPlace.latitude = latitude
+            existingPlace.longitude = longitude
             existingPlace.city = location
             existingPlace.notes = notes
             existingPlace.isVisited = hasVisited
@@ -2714,6 +2871,7 @@ struct PlaceEditorView: View {
             existingPlace.whoToBring = whoToBring
             existingPlace.entryFee = entryFee
             existingPlace.dishRecommendations = dishRecommendations
+            existingPlace.videoURL = MediaLink.storedString(from: videoURL)
             existingPlace.wouldReturn = wouldReturn
             existingPlace.overallRating = ratingInt
             existingPlace.priceRating = priceRatingInt
@@ -2722,24 +2880,11 @@ struct PlaceEditorView: View {
             existingPlace.funFactorRating = funFactorRatingInt
             existingPlace.sceneryRating = sceneryRatingInt
             
-            if let image = selectedImage, let placeID = existingPlace.id {
-                if let oldPhotoURL = existingPlace.photoURL {
-                    try? await CloudKitAssetService.shared.deletePhoto(recordName: oldPhotoURL)
-                }
-                do {
-                    let photoURL = try await CloudKitAssetService.shared.uploadPhoto(image, for: placeID)
-                    existingPlace.photoURL = photoURL
-                } catch {
-                    saveFailedMessage = "Photo couldn't upload to iCloud: \(error.localizedDescription). The place was saved without a new photo."
-                    ErrorHandlingService.shared.reportOperationFailure(
-                        module: "Places",
-                        detail: "Photo upload failed: \(error.localizedDescription)"
-                    )
-                }
-            } else if selectedImage == nil, let oldPhotoURL = existingPlace.photoURL {
-                try? await CloudKitAssetService.shared.deletePhoto(recordName: oldPhotoURL)
-                existingPlace.photoURL = nil
-            }
+            let photoResult = await resolvePlacePhoto(
+                placeID: existingPlace.id,
+                previousPath: existingPlace.photoURL ?? existingPhotoURL
+            )
+            applyPlacePhotoResult(photoResult, to: existingPlace)
             
             existingPlace.modifiedDate = Date()
         } else {
@@ -2748,6 +2893,8 @@ struct PlaceEditorView: View {
             newPlace.id = placeID
             newPlace.name = resolvedName
             newPlace.address = address
+            newPlace.latitude = latitude
+            newPlace.longitude = longitude
             newPlace.city = location
             newPlace.notes = notes
             newPlace.isVisited = hasVisited
@@ -2761,6 +2908,7 @@ struct PlaceEditorView: View {
             newPlace.whoToBring = whoToBring
             newPlace.entryFee = entryFee
             newPlace.dishRecommendations = dishRecommendations
+            newPlace.videoURL = MediaLink.storedString(from: videoURL)
             newPlace.wouldReturn = wouldReturn
             newPlace.overallRating = ratingInt
             newPlace.priceRating = priceRatingInt
@@ -2769,18 +2917,8 @@ struct PlaceEditorView: View {
             newPlace.funFactorRating = funFactorRatingInt
             newPlace.sceneryRating = sceneryRatingInt
             
-            if let image = selectedImage {
-                do {
-                    let photoURL = try await CloudKitAssetService.shared.uploadPhoto(image, for: placeID)
-                    newPlace.photoURL = photoURL
-                } catch {
-                    saveFailedMessage = "Photo couldn't upload to iCloud: \(error.localizedDescription). The place was saved without a photo."
-                    ErrorHandlingService.shared.reportOperationFailure(
-                        module: "Places",
-                        detail: "Photo upload failed: \(error.localizedDescription)"
-                    )
-                }
-            }
+            let photoResult = await resolvePlacePhoto(placeID: placeID, previousPath: nil)
+            applyPlacePhotoResult(photoResult, to: newPlace)
             
             newPlace.createdDate = Date()
             newPlace.modifiedDate = Date()
@@ -2794,6 +2932,81 @@ struct PlaceEditorView: View {
         saveFailedMessage = "Failed to save."
         return false
     }
+
+    private enum PlacePhotoSaveResult {
+        case unchanged
+        case removed
+        case cloud(String)
+        case localOnly(String)
+        case failed
+    }
+
+    private func resolvePlacePhoto(placeID: UUID?, previousPath: String?) async -> PlacePhotoSaveResult {
+        if photoRemoved {
+            await deletePlacePhotoAsset(at: previousPath)
+            return .removed
+        }
+
+        guard photoChanged, let image = selectedImage, let placeID else {
+            return .unchanged
+        }
+
+        let normalized = PlaceImageStore.normalizedJPEGData(from: image)
+            .flatMap { platformImage(from: $0) } ?? image
+
+        do {
+            let photoURL = try await CloudKitAssetService.shared.uploadPhoto(normalized, for: placeID)
+            PlaceImageStore.cacheSyncedImage(normalized, recordName: photoURL)
+            if let previousPath, previousPath != photoURL {
+                await deletePlacePhotoAsset(at: previousPath)
+            }
+            return .cloud(photoURL)
+        } catch {
+            do {
+                let fileName = try PlaceImageStore.saveImage(
+                    normalized,
+                    for: placeID,
+                    replacing: previousPath.flatMap { PlaceImageStore.isCloudRecordName($0) ? nil : $0 }
+                )
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Places",
+                    detail: "Photo saved on this device, but iCloud sync failed. It will retry when you open Places."
+                )
+                return .localOnly(fileName)
+            } catch {
+                saveFailedMessage = "Photo couldn't be saved: \(error.localizedDescription)"
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Places",
+                    detail: "Photo save failed: \(error.localizedDescription)"
+                )
+                return .failed
+            }
+        }
+    }
+
+    private func applyPlacePhotoResult(_ result: PlacePhotoSaveResult, to place: Place) {
+        switch result {
+        case .unchanged:
+            break
+        case .removed:
+            place.photoURL = nil
+            existingPhotoURL = nil
+        case .cloud(let url), .localOnly(let url):
+            place.photoURL = url
+            existingPhotoURL = url
+        case .failed:
+            break
+        }
+    }
+
+    private func deletePlacePhotoAsset(at path: String?) async {
+        guard let path, !path.isEmpty else { return }
+        if PlaceImageStore.isCloudRecordName(path) {
+            try? await CloudKitAssetService.shared.deletePhoto(recordName: path)
+        } else {
+            PlaceImageStore.deleteImage(at: path)
+        }
+    }
 }
 
 // MARK: - Editor Text Field
@@ -2801,6 +3014,7 @@ struct EditorTextField: View {
     let title: String
     let placeholder: String
     @Binding var text: String
+    var isURL: Bool = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
@@ -2810,6 +3024,11 @@ struct EditorTextField: View {
             
             TextField(placeholder, text: $text)
                 .font(DesignSystem.Typography.body)
+                #if os(iOS)
+                .keyboardType(isURL ? .URL : .default)
+                .textInputAutocapitalization(isURL ? .never : .sentences)
+                .autocorrectionDisabled(isURL)
+                #endif
                 .padding(DesignSystem.Spacing.sm)
                 .background(DesignSystem.Colors.backgroundSecondary)
                 .cornerRadius(DesignSystem.CornerRadius.sm)
@@ -2870,7 +3089,14 @@ struct ImagePicker: UIViewControllerRepresentable {
         let parent: ImagePicker
         init(_ parent: ImagePicker) { self.parent = parent }
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let img = info[.originalImage] as? UIImage { parent.image = img }
+            if let img = info[.originalImage] as? UIImage {
+                if let data = PlaceImageStore.normalizedJPEGData(from: img),
+                   let normalized = UIImage(data: data) {
+                    parent.image = normalized
+                } else {
+                    parent.image = img
+                }
+            }
             parent.dismiss()
         }
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
@@ -2887,11 +3113,18 @@ struct ImagePicker: View {
             Text("Choose an image")
             Button("Choose Image…") {
                 let panel = NSOpenPanel()
-                panel.allowedContentTypes = [.png, .jpeg]
+                panel.allowedContentTypes = [.image]
                 panel.allowsMultipleSelection = false
                 if panel.runModal() == .OK, let url = panel.url,
                    let data = try? Data(contentsOf: url),
-                   let img = platformImage(from: data) { image = img }
+                   let img = platformImage(from: data) {
+                    if let jpeg = PlaceImageStore.normalizedJPEGData(from: img),
+                       let normalized = platformImage(from: jpeg) {
+                        image = normalized
+                    } else {
+                        image = img
+                    }
+                }
                 dismiss()
             }
             Button("Cancel") { dismiss() }

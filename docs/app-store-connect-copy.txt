@@ -4,6 +4,15 @@ InkSlate — App Store Connect copy (paste into each field)
 IMPORTANT: Upload a NEW iOS build (build 14+) before submitting. Build 13 (May 30)
 was uploaded BEFORE subscription code was added (June 2). Reviewers must see the paywall.
 
+--- macOS PLATFORM (add in App Store Connect) ---
+  Platform: macOS
+  Bundle ID: com.lucas.InkSlateNew (same as iOS for unified iCloud)
+  Category: Productivity
+  Minimum macOS: 15.0
+  Enable the same IAP products (Monthly, Yearly, Lifetime) for the Mac platform.
+  Screenshots: 1280×800 or 1440×900 window captures (sidebar + Notes, Budget, Settings).
+  Mac import: drag text/files onto Notes; ink sln://import URL scheme; Share extension (optional follow-up target).
+
 
 --- SUBSCRIPTION GROUP: InkSlate Pro (ID 22124050) ---
 
@@ -78,6 +87,34 @@ No demo account needed. iCloud sync is optional.
 --- iOS APP VERSION 2.0 — What's New ---
 
 InkSlate Pro is now available as monthly or yearly subscriptions (7-day free trial) in addition to the existing lifetime purchase. Notes, Budget, and Calendar remain free.
+
+
+--- iOS / macOS APP VERSION 2.3 — What's New ---
+
+What's New in 2.3
+
+• Share Apple Notes into InkSlate — formatting like bold, lists, and links is preserved
+• Notes open full screen, with cleaner uniform note cards
+• Notes search and editor fixes
+• Want to Watch redesigned as poster shelves, and the Watched button works again
+• Recipes: edit ingredients more easily, optional quantities, smoother cook mode
+• Daily Journal no longer creates duplicate entries across devices
+• Places category delete on long-press fixed
+• Sync and reliability improvements
+
+
+--- iOS / macOS APP VERSION 2.4 — What's New ---
+
+What's New in 2.4
+
+• Personalize Home with a custom background from your photos - pinch and drag to position it just right
+• New Pink and Yellow themes to freshen up your look
+• Tap a calendar day to see all events in one place, and add new ones more easily
+• More reliable all-day events that stay on the day you chose
+• Smoother recipe browsing, with photos that save and sync more dependably
+• Profile photo now syncs across your devices with iCloud
+• Under-the-hood polish for a more reliable everyday experience
+• Bug fixes
 
 
 --- APP PRIVACY / METADATA CHECKLIST ---

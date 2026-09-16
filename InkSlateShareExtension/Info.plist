@@ -8,18 +8,25 @@
 	<dict>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<!-- Show for text, URLs, images, PDFs, and generic files -->
 			<key>NSExtensionActivationRule</key>
-			<dict>
-				<key>NSExtensionActivationSupportsText</key>
-				<true/>
-				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-				<integer>1</integer>
-				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
-				<integer>20</integer>
-				<key>NSExtensionActivationSupportsFileWithMaxCount</key>
-				<integer>20</integer>
-			</dict>
+			<string>SUBQUERY (
+  extensionItems,
+  $extensionItem,
+  SUBQUERY (
+    $extensionItem.attachments,
+    $attachment,
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.rtf" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.html" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.apple.flat-rtfd" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR
+    ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.apple.notes.note"
+  ).@count &gt; 0 OR
+  $extensionItem.attributedContentText != nil OR
+  $extensionItem.attributedTitle != nil
+).@count &gt; 0</string>
 		</dict>
 		<key>NSExtensionMainStoryboard</key>
 		<string>MainInterface</string>
@@ -28,4 +35,3 @@
 	</dict>
 </dict>
 </plist>
-

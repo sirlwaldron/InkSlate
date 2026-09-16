@@ -11,6 +11,9 @@ class BudgetManager: ObservableObject {
 
     private var totalSpentCache: [String: Double] = [:]
     private var totalSpentObserversInstalled = false
+    /// Prevents concurrent default seeding from racing and creating duplicate categories.
+    private var isInitializingDefaultCategories = false
+    private var isDeduplicatingBudgetCategories = false
 
     private init() {
         installCacheInvalidationObservers()
@@ -223,31 +226,169 @@ class BudgetManager: ObservableObject {
     // MARK: - Default Categories
     
     func initializeDefaultCategories(with context: NSManagedObjectContext) {
-        let defaultCategories = [
-            ("🏠 Housing", "house.fill", "#2196F3"),
-            ("🍽️ Food", "fork.knife", "#4CAF50"),
-            ("🚗 Transportation", "car.fill", "#8B4513"),
-            ("🧾 Bills", "doc.plaintext.fill", "#FF9800"),
-            ("🛍️ Shopping", "cart.fill", "#FF5722"),
-            ("💰 Savings", "banknote.fill", "#E91E63"),
-            ("🎉 Fun", "sparkles", "#9C27B0"),
-            ("📺 Subscriptions", "tv.fill", "#00BCD4"),
-            ("📝 Misc", "ellipsis.circle.fill", "#607D8B")
-        ]
-        
-        for (index, (name, icon, color)) in defaultCategories.enumerated() {
-            let category = createCategory(
-                name: name,
-                icon: icon,
-                color: color,
-                initialBudget: 0.0,
-                createDefaultSubcategory: false,
-                with: context
-            )
-            category.sortOrder = Int16(index)
+        // Idempotent: skip names that already exist so CloudKit/onAppear races
+        // don't create a second full set of Housing/Food/etc.
+        guard !isInitializingDefaultCategories else { return }
+        isInitializingDefaultCategories = true
+        defer { isInitializingDefaultCategories = false }
+
+        context.performAndWait {
+            let existing = (try? context.fetch(BudgetCategory.fetchRequest())) ?? []
+            let existingNames = Set(existing.compactMap { $0.name })
+
+            let defaultCategories = [
+                ("🏠 Housing", "house.fill", "#2196F3"),
+                ("🍽️ Food", "fork.knife", "#4CAF50"),
+                ("🚗 Transportation", "car.fill", "#8B4513"),
+                ("🧾 Bills", "doc.plaintext.fill", "#FF9800"),
+                ("🛍️ Shopping", "cart.fill", "#FF5722"),
+                ("💰 Savings", "banknote.fill", "#E91E63"),
+                ("🎉 Fun", "sparkles", "#9C27B0"),
+                ("📺 Subscriptions", "tv.fill", "#00BCD4"),
+                ("📝 Misc", "ellipsis.circle.fill", "#607D8B")
+            ]
+
+            var didChange = false
+            for (index, (name, icon, color)) in defaultCategories.enumerated() {
+                guard !existingNames.contains(name) else { continue }
+
+                let category = BudgetCategory(context: context)
+                category.id = UUID()
+                category.name = name
+                category.icon = icon
+                category.color = color
+                category.sortOrder = Int16(index)
+                category.createdDate = Date()
+                category.modifiedDate = Date()
+                context.insert(category)
+                didChange = true
+            }
+
+            if didChange {
+                saveContext(context)
+            }
         }
-        
-        saveContext(context)
+    }
+
+    /// Merges same-named categories/subcategories created by seeding + CloudKit races.
+    func deduplicateBudgetCategories(with context: NSManagedObjectContext) {
+        guard !isDeduplicatingBudgetCategories else { return }
+        isDeduplicatingBudgetCategories = true
+        defer { isDeduplicatingBudgetCategories = false }
+
+        context.performAndWait {
+            let categories = (try? context.fetch(BudgetCategory.fetchRequest())) ?? []
+            guard !categories.isEmpty else { return }
+
+            var grouped: [String: [BudgetCategory]] = [:]
+            for category in categories {
+                let key = (category.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { continue }
+                grouped[key, default: []].append(category)
+            }
+
+            var didChange = false
+            for (_, group) in grouped where group.count > 1 {
+                let keeper = group.min { a, b in
+                    let da = a.createdDate ?? .distantFuture
+                    let db = b.createdDate ?? .distantFuture
+                    if da != db { return da < db }
+                    return (a.id?.uuidString ?? "") < (b.id?.uuidString ?? "")
+                }!
+
+                for dupe in group where dupe.objectID != keeper.objectID {
+                    mergeBudgetCategory(from: dupe, into: keeper, context: context)
+                    context.delete(dupe)
+                    didChange = true
+                }
+
+                if deduplicateSubcategories(in: keeper) {
+                    didChange = true
+                }
+            }
+
+            // Also collapse same-named subcategories inside unique categories.
+            for category in categories where !category.isDeleted {
+                if deduplicateSubcategories(in: category) {
+                    didChange = true
+                }
+            }
+
+            if didChange {
+                saveContext(context)
+            }
+        }
+    }
+
+    private func mergeBudgetCategory(
+        from dupe: BudgetCategory,
+        into keeper: BudgetCategory,
+        context: NSManagedObjectContext
+    ) {
+        let dupeSubs = (dupe.subcategories as? Set<BudgetSubcategory>) ?? []
+        let keeperSubs = (keeper.subcategories as? Set<BudgetSubcategory>) ?? []
+        var keeperByName: [String: BudgetSubcategory] = [:]
+        for sub in keeperSubs {
+            let key = (sub.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            keeperByName[key] = sub
+        }
+
+        for sub in dupeSubs {
+            let key = (sub.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty, let existing = keeperByName[key] {
+                mergeBudgetSubcategory(from: sub, into: existing)
+                context.delete(sub)
+            } else {
+                sub.category = keeper
+                sub.modifiedDate = Date()
+                if !key.isEmpty {
+                    keeperByName[key] = sub
+                }
+            }
+        }
+        keeper.modifiedDate = Date()
+    }
+
+    private func deduplicateSubcategories(in category: BudgetCategory) -> Bool {
+        let subs = (category.subcategories as? Set<BudgetSubcategory>) ?? []
+        guard subs.count > 1 else { return false }
+
+        var grouped: [String: [BudgetSubcategory]] = [:]
+        for sub in subs {
+            let key = (sub.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            grouped[key, default: []].append(sub)
+        }
+
+        var didChange = false
+        for (_, group) in grouped where group.count > 1 {
+            let keeper = group.min { a, b in
+                let da = a.createdDate ?? .distantFuture
+                let db = b.createdDate ?? .distantFuture
+                if da != db { return da < db }
+                return (a.id?.uuidString ?? "") < (b.id?.uuidString ?? "")
+            }!
+
+            for dupe in group where dupe.objectID != keeper.objectID {
+                mergeBudgetSubcategory(from: dupe, into: keeper)
+                category.managedObjectContext?.delete(dupe)
+                didChange = true
+            }
+        }
+        return didChange
+    }
+
+    private func mergeBudgetSubcategory(from dupe: BudgetSubcategory, into keeper: BudgetSubcategory) {
+        if let items = dupe.items as? Set<BudgetItem> {
+            for item in items {
+                item.subcategory = keeper
+                item.modifiedDate = Date()
+            }
+        }
+        // Prefer the non-zero / higher budget so a fresh seed (0) doesn't wipe user amounts.
+        keeper.budgetAmount = max(keeper.budgetAmount, dupe.budgetAmount)
+        keeper.modifiedDate = Date()
     }
     
     // MARK: - Cleanup

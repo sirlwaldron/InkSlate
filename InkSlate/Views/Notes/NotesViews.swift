@@ -1,5 +1,7 @@
 import SwiftUI
 import Foundation
+import Combine
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -51,6 +53,7 @@ struct NotesListView: View {
 
     @State private var filteredNoteIDs: [NSManagedObjectID] = []
     @State private var isFiltering = false
+    @State private var filterGeneration = 0
     @State private var refreshWorkItem: DispatchWorkItem?
     
     @State private var notesChromeAppeared = false
@@ -114,6 +117,41 @@ struct NotesListView: View {
     }
 
     var body: some View {
+        notesNavigationStack
+            .modifier(NotesListPresentationModifier(
+                showingFoldersSheet: $showingFoldersSheet,
+                showingNewNoteSheet: $showingNewNoteSheet,
+                showingNewProjectSheet: $showingNewProjectSheet,
+                showingProjectSettings: $showingProjectSettings,
+                showingTagManager: $showingTagManager,
+                noteToMove: $noteToMove,
+                selectedNote: $selectedNote,
+                selectedProject: $selectedProject,
+                showingError: $showingError,
+                showingNoteDetails: $showingNoteDetails,
+                noteForDetails: $noteForDetails,
+                errorMessage: errorMessage,
+                tagColorByLowercasedName: tagColorByLowercasedName
+            ))
+            .modifier(NotesListLifecycleModifier(
+                viewContext: viewContext,
+                searchDebouncer: searchDebouncer,
+                searchQuery: $searchQuery,
+                selectedProject: $selectedProject,
+                showingDeletedNotes: showingDeletedNotes,
+                showPinnedOnly: showPinnedOnly,
+                sortBy: sortBy,
+                sortDirection: sortDirection,
+                notesChromeAppeared: $notesChromeAppeared,
+                onLoadFolder: loadLastSelectedFolder,
+                onSaveFolder: saveLastSelectedFolder,
+                onPurgeTrash: purgeOldDeletedNotes,
+                onRefresh: refreshFilteredNotes,
+                onScheduleRefresh: { scheduleRefreshFilteredNotes(debounce: $0) }
+            ))
+    }
+
+    private var notesNavigationStack: some View {
         NavigationStack {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
@@ -136,32 +174,87 @@ struct NotesListView: View {
                 }
             }
             .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .overlay { if isLoading { loadingOverlay } }
-                .sheet(isPresented: $showingFoldersSheet) {
-                    FoldersListView(selectedProject: $selectedProject, showingNewProjectSheet: $showingNewProjectSheet)
+            .onDrop(of: [.plainText, .utf8PlainText, .fileURL], isTargeted: nil) { providers in
+                handleNoteDrop(providers)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .inkSlateNewNote)) { _ in
+                showingNewNoteSheet = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .inkSlateSearchNotes)) { _ in
+                // Focus is handled by the search field when Notes is active.
+            }
+            .onReceive(
+                SharedStateManager.shared.$pendingOpenNoteID
+                    .combineLatest(SharedStateManager.shared.$showSplashScreen)
+                    .receive(on: DispatchQueue.main)
+            ) { objectID, splashVisible in
+                // Wait for the launch/splash transition to finish before presenting
+                // the editor, otherwise the full-screen cover fights the layout.
+                guard let objectID, !splashVisible else { return }
+                SharedStateManager.shared.pendingOpenNoteID = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    openImportedNote(objectID)
                 }
-                .sheet(isPresented: $showingNewNoteSheet) { 
-                    NewNoteView(selectedProject: selectedProject)
+            }
+        }
+    }
+
+    private func openImportedNote(_ objectID: NSManagedObjectID) {
+        guard let note = try? viewContext.existingObject(with: objectID) as? Notes,
+              !note.isMarkedDeleted else { return }
+        selectedNote = note
+    }
+}
+
+private struct NotesListPresentationModifier: ViewModifier {
+    @Binding var showingFoldersSheet: Bool
+    @Binding var showingNewNoteSheet: Bool
+    @Binding var showingNewProjectSheet: Bool
+    @Binding var showingProjectSettings: Bool
+    @Binding var showingTagManager: Bool
+    @Binding var noteToMove: Notes?
+    @Binding var selectedNote: Notes?
+    @Binding var selectedProject: FSProject?
+    @Binding var showingError: Bool
+    @Binding var showingNoteDetails: Bool
+    @Binding var noteForDetails: Notes?
+    let errorMessage: String
+    let tagColorByLowercasedName: [String: String]
+
+    private var noteDetailsMessage: String {
+        let created = (noteForDetails?.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits))
+        let modified = (noteForDetails?.modifiedDate ?? noteForDetails?.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits))
+        return "Created: \(created)\nLast edited: \(modified)"
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .inkSlateSheet(isPresented: $showingFoldersSheet) {
+                FoldersListView(selectedProject: $selectedProject, showingNewProjectSheet: $showingNewProjectSheet)
+            }
+            .inkSlateSheet(isPresented: $showingNewNoteSheet) {
+                NewNoteView(selectedProject: selectedProject)
+            }
+            .inkSlateSheet(isPresented: $showingNewProjectSheet) {
+                NewProjectView()
+            }
+            .inkSlateSheet(isPresented: $showingProjectSettings) {
+                if let project = selectedProject {
+                    ProjectSettingsView(project: project)
                 }
-                .sheet(isPresented: $showingNewProjectSheet) {
-                    NewProjectView()
+            }
+            .inkSlateSheet(isPresented: $showingTagManager) {
+                TagManagerView()
+            }
+            .inkSlateSheet(item: $noteToMove) { note in
+                MoveToFolderView(note: note) {
+                    noteToMove = nil
                 }
-                .sheet(isPresented: $showingProjectSettings) {
-                    if let project = selectedProject {
-                        ProjectSettingsView(project: project)
-                    }
-                }
-                .sheet(isPresented: $showingTagManager) {
-                    TagManagerView()
-                }
-                .sheet(item: $noteToMove) { note in
-                    MoveToFolderView(note: note) {
-                        noteToMove = nil
-                    }
-                }
-            .sheet(item: $selectedNote) { note in
+            }
+            .fullScreenCoverIfAvailable(item: $selectedNote) { note in
                 Group {
                     if note.isMarkedDeleted {
                         Text("This note is in Recently Deleted. Restore it from the Trash list to edit.")
@@ -174,46 +267,71 @@ struct NotesListView: View {
                     }
                 }
             }
-            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+            .alert("Error", isPresented: $showingError) {
+                Button("OK") {}
+            } message: {
+                Text(errorMessage)
+            }
             .alert("Note Details", isPresented: $showingNoteDetails) {
                 Button("OK", role: .cancel) {
                     noteForDetails = nil
                 }
             } message: {
-                let created = (noteForDetails?.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits))
-                let modified = (noteForDetails?.modifiedDate ?? noteForDetails?.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits))
-                Text("Created: \(created)\nLast edited: \(modified)")
+                Text(noteDetailsMessage)
             }
+    }
+}
+
+private struct NotesListLifecycleModifier: ViewModifier {
+    let viewContext: NSManagedObjectContext
+    @ObservedObject var searchDebouncer: SearchDebouncer
+    @Binding var searchQuery: String
+    @Binding var selectedProject: FSProject?
+    let showingDeletedNotes: Bool
+    let showPinnedOnly: Bool
+    let sortBy: SortBy
+    let sortDirection: SortDirection
+    @Binding var notesChromeAppeared: Bool
+    let onLoadFolder: () -> Void
+    let onSaveFolder: (FSProject?) -> Void
+    let onPurgeTrash: () -> Void
+    let onRefresh: () -> Void
+    let onScheduleRefresh: (TimeInterval) -> Void
+
+    func body(content: Content) -> some View {
+        content
             .onAppear {
                 NotesEncryptionRemoval.migrateIfNeeded(in: viewContext)
-                purgeOldDeletedNotes()
-                loadLastSelectedFolder()
-                refreshFilteredNotes()
+                onPurgeTrash()
+                onLoadFolder()
+                onRefresh()
                 withAnimation(.easeOut(duration: 0.45)) {
                     notesChromeAppeared = true
+                }
+                Task {
+                    await NotePhotoSync.flushPendingUploads()
                 }
             }
             .onReceive(searchDebouncer.$debouncedText) { value in
                 searchQuery = value.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             .onChange(of: selectedProject) { _, newValue in
-                saveLastSelectedFolder(newValue)
+                onSaveFolder(newValue)
             }
-            .onChange(of: showingDeletedNotes) { _, _ in refreshFilteredNotes() }
-            .onChange(of: selectedProject?.objectID) { _, _ in refreshFilteredNotes() }
-            .onChange(of: showPinnedOnly) { _, _ in refreshFilteredNotes() }
-            .onChange(of: sortBy) { _, _ in refreshFilteredNotes() }
-            .onChange(of: sortDirection) { _, _ in refreshFilteredNotes() }
-            .onChange(of: searchDebouncer.debouncedText) { _, _ in refreshFilteredNotes() }
+            .onChange(of: showingDeletedNotes) { _, _ in onRefresh() }
+            .onChange(of: selectedProject?.objectID) { _, _ in onRefresh() }
+            .onChange(of: showPinnedOnly) { _, _ in onRefresh() }
+            .onChange(of: sortBy) { _, _ in onRefresh() }
+            .onChange(of: sortDirection) { _, _ in onRefresh() }
+            .onChange(of: searchDebouncer.debouncedText) { _, _ in onRefresh() }
             .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextDidSave, object: viewContext)) { _ in
-                scheduleRefreshFilteredNotes(debounce: 0.35)
+                onScheduleRefresh(0.35)
             }
             .onReceive(NotificationCenter.default.publisher(for: .cloudKitDataRefreshed)) { _ in
-                scheduleRefreshFilteredNotes(debounce: 0.35)
+                onScheduleRefresh(0.35)
             }
-        }
-        }
     }
+}
 
 // MARK: - Folders List View (Sheet)
 struct FoldersListView: View {
@@ -319,8 +437,8 @@ struct FoldersListView: View {
                 }
             }
             .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -348,7 +466,7 @@ struct FoldersListView: View {
             } message: {
                 Text("Are you sure you want to delete this folder? All notes in this folder will be moved to 'All Notes'.")
             }
-            .sheet(isPresented: $showingNewProjectSheet) {
+            .inkSlateSheet(isPresented: $showingNewProjectSheet) {
                 NewProjectView()
             }
             .alert("Couldn’t save", isPresented: $showingFolderSaveError) {
@@ -441,6 +559,37 @@ struct FoldersListView: View {
 }
 
 extension NotesListView {
+    private func handleNoteDrop(_ providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
+                    let text: String? = {
+                        if let s = item as? String { return s }
+                        if let data = item as? Data { return String(data: data, encoding: .utf8) }
+                        return nil
+                    }()
+                    guard let text, !text.isEmpty else { return }
+                    DispatchQueue.main.async {
+                        SharedImportManager.importDroppedText(text, in: viewContext)
+                        refreshFilteredNotes()
+                    }
+                }
+                return true
+            }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    guard let url = item as? URL else { return }
+                    DispatchQueue.main.async {
+                        SharedImportManager.importDroppedFileURL(url, in: viewContext)
+                        refreshFilteredNotes()
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+
     private var notesHeroHeader: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             HStack(alignment: .top, spacing: DesignSystem.Spacing.lg) {
@@ -784,6 +933,7 @@ extension NotesListView {
 
         if !viewContext.inkSlateSave(module: "Notes") {
             note.isMarkedDeleted = false
+            note.deletedDate = nil
             errorMessage = "Failed to delete note."
             showingError = true
         }
@@ -982,6 +1132,8 @@ extension NotesListView {
         let filterBy = folderSettings?.filterBy ?? "all"
         
         isFiltering = true
+        filterGeneration += 1
+        let generation = filterGeneration
         let bg = PersistenceController.shared.backgroundContext()
         bg.perform {
             let fetch = NSFetchRequest<NSManagedObjectID>(entityName: "Notes")
@@ -1024,22 +1176,45 @@ extension NotesListView {
             
             fetch.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
             
+            let sortDescriptors: [NSSortDescriptor]
             switch effectiveSortBy {
             case .title:
-                fetch.sortDescriptors = [NSSortDescriptor(key: "title", ascending: ascending, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))]
+                sortDescriptors = [NSSortDescriptor(key: "title", ascending: ascending, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))]
             case .creationDate:
-                fetch.sortDescriptors = [NSSortDescriptor(key: "createdDate", ascending: ascending)]
+                sortDescriptors = [NSSortDescriptor(key: "createdDate", ascending: ascending)]
             case .modificationDate:
-                fetch.sortDescriptors = [NSSortDescriptor(key: "modifiedDate", ascending: ascending)]
+                sortDescriptors = [NSSortDescriptor(key: "modifiedDate", ascending: ascending)]
             case .pin:
-                fetch.sortDescriptors = [
+                sortDescriptors = [
                     NSSortDescriptor(key: "isPinned", ascending: ascending),
                     NSSortDescriptor(key: "modifiedDate", ascending: false)
                 ]
             }
+            fetch.sortDescriptors = sortDescriptors
             
-            let ids = (try? bg.fetch(fetch)) ?? []
+            let ids: [NSManagedObjectID]
+            if query.isEmpty {
+                ids = (try? bg.fetch(fetch)) ?? []
+            } else {
+                // The `content CONTAINS` predicate also matches the serialized base64
+                // formatting blob, so re-verify matches against the real plain text.
+                let noteFetch = NSFetchRequest<Notes>(entityName: "Notes")
+                noteFetch.predicate = fetch.predicate
+                noteFetch.sortDescriptors = sortDescriptors
+                noteFetch.fetchBatchSize = 80
+                let candidates = (try? bg.fetch(noteFetch)) ?? []
+                let opts: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+                func matches(_ note: Notes) -> Bool {
+                    if scope != "content", (note.title ?? "").range(of: query, options: opts) != nil { return true }
+                    if (note.preview ?? "").range(of: query, options: opts) != nil { return true }
+                    if (note.tags ?? "").range(of: query, options: opts) != nil { return true }
+                    guard let content = note.content, !content.isEmpty else { return false }
+                    return MarkdownSerialization.searchablePlainText(from: content).range(of: query, options: opts) != nil
+                }
+                ids = candidates.filter(matches).map(\.objectID)
+            }
             DispatchQueue.main.async {
+                guard generation == filterGeneration else { return }
                 filteredNoteIDs = ids
                 isFiltering = false
             }
@@ -1361,18 +1536,18 @@ private struct NoteTagChipActionsSheet: View {
                 }
             }
             .navigationTitle(token.name)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingEditTag) {
+            .inkSlateSheet(isPresented: $showingEditTag) {
                 if let t = tagToEdit {
                     EditTagView(tag: t)
                 }
             }
-            .sheet(isPresented: Binding(
+            .inkSlateSheet(isPresented: Binding(
                 get: { tagForColorPick != nil },
                 set: { if !$0 { tagForColorPick = nil } }
             )) {
@@ -1461,7 +1636,7 @@ private struct TagColorPickSheet: View {
             }
             .background(DesignSystem.Colors.background.ignoresSafeArea())
             .navigationTitle("Tag color")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -1489,24 +1664,22 @@ struct NoteRowView: View {
     
     @ViewBuilder
     private var previewSnippet: some View {
-        let previewText = note.rowPreviewLineText()
-        if !previewText.isEmpty {
-            Text(previewText)
-                .font(DesignSystem.Typography.body)
-                .foregroundColor(DesignSystem.Colors.textSecondary)
-                .lineLimit(4)
-                .multilineTextAlignment(.leading)
-                .lineSpacing(2)
-        }
+        // Reserve a fixed two lines so every card has the same height.
+        Text(note.rowPreviewLineText())
+            .font(DesignSystem.Typography.body)
+            .foregroundColor(DesignSystem.Colors.textSecondary)
+            .lineLimit(2, reservesSpace: true)
+            .multilineTextAlignment(.leading)
+            .lineSpacing(2)
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                 HStack(alignment: .firstTextBaseline, spacing: DesignSystem.Spacing.sm) {
                     Text((note.title?.isEmpty ?? true) ? "Untitled" : (note.title ?? "Untitled"))
                         .font(DesignSystem.Typography.title3)
                         .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .multilineTextAlignment(.leading)
 
                     Spacer(minLength: 8)
@@ -1518,17 +1691,6 @@ struct NoteRowView: View {
                     }
                 }
 
-                if let project = note.project, let name = project.name, !name.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 11, weight: .medium))
-                        Text(name)
-                            .font(DesignSystem.Typography.footnote)
-                            .lineLimit(1)
-                    }
-                    .foregroundColor(DesignSystem.Colors.textTertiary)
-                }
-
                 if showPreview {
                     previewSnippet
                 }
@@ -1538,6 +1700,16 @@ struct NoteRowView: View {
                         Text((note.modifiedDate ?? note.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits)))
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(DesignSystem.Colors.textTertiary)
+                    }
+                    if let project = note.project, let name = project.name, !name.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 10, weight: .medium))
+                            Text(name)
+                                .font(DesignSystem.Typography.caption)
+                                .lineLimit(1)
+                        }
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
                     }
                     Spacer(minLength: 0)
                     if showTagsRow, !(note.tags?.isEmpty ?? true) {
@@ -1571,7 +1743,8 @@ struct NoteRowView: View {
                     }
                 }
             }
-            .padding(DesignSystem.Spacing.lg)
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+            .padding(.vertical, DesignSystem.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(DesignSystem.Colors.surface)
             .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous))
@@ -1596,7 +1769,7 @@ struct NoteRowView: View {
                 "Last edited: \((note.modifiedDate ?? note.createdDate ?? Date()).formatted(.dateTime.month(.abbreviated).day().year(.defaultDigits)))"
             ].joined(separator: "\n"))
         }
-        .sheet(item: $tagChipActionToken) { token in
+        .inkSlateSheet(item: $tagChipActionToken) { token in
             NoteTagChipActionsSheet(token: token)
         }
     }
@@ -1666,7 +1839,7 @@ struct TextEditorView: View {
     @State private var isSaving = false
     
     @State private var selectedRange = NSRange(location: 0, length: 0)
-    @State private var coordinatorRef: MarkdownEditor.Coordinator?
+    @StateObject private var coordinatorRef = MarkdownEditorCoordinatingRef()
     @State private var showingRemoteContentConflict = false
     @State private var pendingRemoteContent: String?
     var body: some View {
@@ -1674,7 +1847,7 @@ struct TextEditorView: View {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    if let coordinator = coordinatorRef {
+                    if let coordinator = coordinatorRef.value {
                         MarkdownToolbarView(coordinator: coordinator)
                             .padding(.vertical, DesignSystem.Spacing.sm)
                             .background(DesignSystem.Colors.surface)
@@ -1686,22 +1859,22 @@ struct TextEditorView: View {
                             )
                     }
                     titleSection
-                    #if canImport(UIKit)
                     NoteAttachmentsSection(note: note)
-                    #endif
                     contentSection
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .task(id: note.objectID) {
-                let names = NotePhotoCloudHydrator.recordNamesForPrefetch(
+                let names = NotePhotoRefCollector.recordNamesForPrefetch(
                     imageUrlsJSON: note.imageUrls,
                     content: note.content
                 )
+                await NotePhotoSync.flushPendingUploads()
                 await NotePhotoCloudHydrator.prefetchToCaches(recordNames: names)
             }
             .navigationTitle((note.title?.isEmpty ?? true) ? "Note" : (note.title ?? "Note"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { saveAndDismiss() }
@@ -1721,7 +1894,7 @@ struct TextEditorView: View {
                 }
             }
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .primaryAction) {
                     Button {
                         togglePin()
                     } label: {
@@ -1743,10 +1916,10 @@ struct TextEditorView: View {
                     .accessibilityLabel("Share or export")
                 }
             }
-            .sheet(isPresented: $showingTagEditor) {
+            .inkSlateSheet(isPresented: $showingTagEditor) {
                 NoteTagEditorView(note: note, onSave: { saveNote() })
             }
-            .sheet(isPresented: $showingExportOptions) { ExportOptionsView(note: note) }
+            .inkSlateSheet(isPresented: $showingExportOptions) { ExportOptionsView(note: note) }
             .fullScreenCoverIfAvailable(isPresented: $showingMarkdownPreview) {
                 NotePreviewScreen(note: note, isPresented: $showingMarkdownPreview)
             }
@@ -1785,32 +1958,22 @@ struct TextEditorView: View {
     }
 
     private func reloadEditorFromNoteContent() {
-        #if canImport(UIKit)
-        coordinatorRef?.applyExternalSerializedContent(note.content ?? "")
+        coordinatorRef.value?.applyExternalSerializedContent(note.content ?? "")
         hasUnsavedChanges = false
-        #endif
     }
 
     private func overwriteRemoteWithLocalEditor() {
-        #if canImport(UIKit)
-        guard let coordinator = coordinatorRef, let tv = coordinator.textView else { return }
-        let serialized = coordinator.serializeContent(from: tv.attributedText)
+        guard let coordinator = coordinatorRef.value,
+              let serialized = coordinator.currentSerializedContent() else { return }
         note.content = serialized
-        #if canImport(UIKit)
-        if let coordinator = coordinatorRef, let tv = coordinator.textView {
-            note.imageUrls = NotePhotoRefCollector.jsonIndex(for: tv.attributedText)
-        } else if let (attr, _) = MarkdownSerialization.deserialize(serialized, maxWidth: 400) {
-            note.imageUrls = NotePhotoRefCollector.jsonIndex(for: attr)
-        } else {
-            note.imageUrls = nil
-        }
-        #endif
+        note.imageUrls = coordinator.currentImageUrlsJSON()
+            ?? MarkdownSerialization.deserialize(serialized, maxWidth: 400).map { NotePhotoRefCollector.jsonIndex(for: $0.0) }
+            ?? nil
         let plain = MarkdownSerialization.plainText(from: serialized)
         note.preview = String(plain.prefix(100))
         note.modifiedDate = Date()
         hasUnsavedChanges = true
         scheduleAutoSave()
-        #endif
     }
 
     private var titleSection: some View {
@@ -1923,13 +2086,13 @@ struct TextEditorView: View {
             .padding(.horizontal, DesignSystem.Spacing.lg)
             .padding(.top, DesignSystem.Spacing.md)
 
-            MarkdownEditor(
+            MarkdownEditorView(
                 text: Binding(
                     get: { note.content ?? "" },
                     set: { note.content = $0 }
                 ),
                 selectedRange: $selectedRange,
-                coordinatorRef: $coordinatorRef,
+                coordinatorRef: coordinatorRef,
                 noteCloudKitID: note.id,
                 notePhotosDisabled: false,
                 onPhotoIndexChanged: { json in
@@ -1952,26 +2115,34 @@ struct TextEditorView: View {
                 handleNoteContentChanged(to: newValue ?? "")
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func handleNoteContentChanged(to newValue: String) {
-        if let coordinator = coordinatorRef, coordinator.lastPublishedSerialized == newValue {
+        #if os(iOS)
+        if let tv = (coordinatorRef.value as? MarkdownEditor.Coordinator)?.textView,
+           NotePhotoCloudHydrator.isHydrating(tv) { return }
+        #elseif os(macOS)
+        if let tv = (coordinatorRef.value as? MarkdownEditorMac.Coordinator)?.textView,
+           NotePhotoCloudHydrator.isHydrating(tv) { return }
+        #endif
+        if let coordinator = coordinatorRef.value, coordinator.lastPublishedSerialized == newValue {
             if coordinator.consumePendingUserEdit() {
                 markAsChanged()
             }
             return
         }
-        #if canImport(UIKit)
-        if let coordinator = coordinatorRef, let tv = coordinator.textView {
-            let local = coordinator.serializeContent(from: tv.attributedText)
-            if newValue != local {
+        if let coordinator = coordinatorRef.value, let local = coordinator.currentSerializedContent(), newValue != local {
+            // Real remote sync while the user has local edits → ask. Otherwise just load it.
+            // (Photo hydrate must never write note.content; if it did, this used to false-alarm.)
+            if hasUnsavedChanges || coordinator.consumePendingUserEdit() {
                 pendingRemoteContent = newValue
                 showingRemoteContentConflict = true
                 return
             }
+            coordinator.applyExternalSerializedContent(newValue)
+            return
         }
-        #endif
         markAsChanged()
     }
 
@@ -1986,11 +2157,9 @@ struct TextEditorView: View {
         hasUnsavedChanges = true
         note.modifiedDate = Date()
 
-        #if canImport(UIKit)
-        if let coordinator = coordinatorRef, let textView = coordinator.textView {
-            let serialized = coordinator.serializeContent(from: textView.attributedText)
+        if let coordinator = coordinatorRef.value, let serialized = coordinator.currentSerializedContent() {
             note.content = serialized
-            note.imageUrls = NotePhotoRefCollector.jsonIndex(for: textView.attributedText)
+            note.imageUrls = coordinator.currentImageUrlsJSON()
             let plain = MarkdownSerialization.plainText(from: serialized)
             note.preview = String(plain.prefix(100))
         } else if let content = note.content {
@@ -2004,7 +2173,6 @@ struct TextEditorView: View {
         } else {
             note.imageUrls = nil
         }
-        #endif
         
         scheduleAutoSave()
     }
@@ -2035,12 +2203,10 @@ struct TextEditorView: View {
 
     /// Pushes the latest UITextView content into the note; matches `NewNoteView.saveNote()` and avoids the editor’s 0.3s debounce losing the las...
     private func flushEditorToNote() {
-        #if canImport(UIKit)
-        coordinatorRef?.flushPendingEditsToParent()
-        if coordinatorRef?.consumePendingUserEdit() == true {
+        coordinatorRef.value?.flushPendingEditsToParent()
+        if coordinatorRef.value?.consumePendingUserEdit() == true {
             markAsChanged()
         }
-        #endif
     }
 
     private func saveNote() {
@@ -2060,9 +2226,7 @@ struct TextEditorView: View {
         do {
             try viewContext.save()
             hasUnsavedChanges = false
-            #if canImport(UIKit)
-            coordinatorRef?.commitPendingPhotoDeletions()
-            #endif
+            coordinatorRef.value?.commitPendingPhotoDeletions()
         } catch let error as NSError {
             if error.domain == NSCocoaErrorDomain {
                 if error.code == 133020 || error.userInfo[NSPersistentStoreSaveConflictsErrorKey] != nil {
@@ -2150,7 +2314,6 @@ struct TextEditorView: View {
     }
 }
 
-#if canImport(UIKit)
 private struct NoteAttachmentEntry: Identifiable {
     let id: String  // CloudKit record name
     let filename: String
@@ -2205,8 +2368,8 @@ private struct NoteAttachmentsSection: View {
             }
             .padding(.horizontal, DesignSystem.Spacing.lg)
             .padding(.top, DesignSystem.Spacing.sm)
-            .sheet(isPresented: $showingShareSheet) {
-                ShareSheet(items: shareItems)
+            .inkSlateSheet(isPresented: $showingShareSheet) {
+                PlatformShareSheet(items: shareItems)
             }
             .alert("Attachment", isPresented: $showingError) {
                 Button("OK", role: .cancel) {}
@@ -2267,7 +2430,6 @@ private struct NoteAttachmentsSection: View {
         return result
     }
 }
-#endif
 
 struct NotePreviewScreen: View {
     @ObservedObject var note: Notes
@@ -2284,8 +2446,8 @@ struct NotePreviewScreen: View {
                 MarkdownPreviewContainer(content: displayContent)
             }
             .navigationTitle((note.title?.isEmpty ?? true) ? "Preview" : (note.title ?? "Preview"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { isPresented = false }
@@ -2305,7 +2467,7 @@ private struct MarkdownPreviewContainer: View {
             let horizontalPad = DesignSystem.Spacing.xxl * 2
             let column = max(80, geo.size.width - horizontalPad)
             ScrollView {
-                MarkdownPreviewTextView(content: content, preferredColumnWidth: column)
+                MarkdownPreviewView(content: content, preferredColumnWidth: column)
                     .frame(width: column, alignment: .leading)
                     .padding(.vertical, DesignSystem.Spacing.xxl)
             }
@@ -2315,44 +2477,6 @@ private struct MarkdownPreviewContainer: View {
         .background(DesignSystem.Colors.background)
     }
 }
-
-#if canImport(UIKit)
-private struct MarkdownPreviewTextView: UIViewRepresentable {
-    let content: String
-    var preferredColumnWidth: CGFloat
-
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
-        textView.backgroundColor = .clear
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isScrollEnabled = false
-        textView.adjustsFontForContentSizeCategory = true
-        textView.textContainerInset = .zero
-        textView.textContainer.lineFragmentPadding = 0
-        textView.textContainer.widthTracksTextView = true
-        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return textView
-    }
-
-    func updateUIView(_ uiView: UITextView, context: Context) {
-        let column = max(60, preferredColumnWidth)
-        let width = max(column, 60)
-        if let (attributed, _) = MarkdownSerialization.deserialize(content, maxWidth: width) {
-            let m = NSMutableAttributedString(attributedString: attributed)
-            NotePhotoAttachment.repairAttachmentBounds(in: m, columnWidth: column)
-            uiView.attributedText = m
-            uiView.layoutIfNeeded()
-            NotePhotoCloudHydrator.hydrate(textView: uiView, overrideColumnWidth: column)
-            DispatchQueue.main.async {
-                NotePhotoCloudHydrator.hydrate(textView: uiView, overrideColumnWidth: column)
-            }
-        } else {
-            uiView.attributedText = EditorContentParser.deserialize(content, maxWidth: width)
-        }
-    }
-}
-#endif
 
 // MARK: - New Note View
 struct NewNoteView: View {
@@ -2372,7 +2496,7 @@ struct NewNoteView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isSaving = false
-    @State private var coordinatorRef: MarkdownEditor.Coordinator?
+    @StateObject private var coordinatorRef = MarkdownEditorCoordinatingRef()
     @State private var selectedRange: NSRange = NSRange(location: 0, length: 0)
 
     var body: some View {
@@ -2380,7 +2504,7 @@ struct NewNoteView: View {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    if let coordinator = coordinatorRef {
+                    if let coordinator = coordinatorRef.value {
                         MarkdownToolbarView(coordinator: coordinator)
                             .padding(.vertical, DesignSystem.Spacing.sm)
                             .background(DesignSystem.Colors.surface)
@@ -2443,7 +2567,7 @@ struct NewNoteView: View {
                             .tracking(0.6)
                             .padding(.horizontal, DesignSystem.Spacing.lg)
                             .padding(.top, DesignSystem.Spacing.md)
-                        MarkdownEditor(text: $content, selectedRange: $selectedRange, coordinatorRef: $coordinatorRef, autoFocusOnAppear: true, noteCloudKitID: draftNoteCloudID, notePhotosDisabled: false)
+                        MarkdownEditorView(text: $content, selectedRange: $selectedRange, coordinatorRef: coordinatorRef, autoFocusOnAppear: true, noteCloudKitID: draftNoteCloudID, notePhotosDisabled: false)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(DesignSystem.Colors.surface)
                             .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous))
@@ -2454,11 +2578,13 @@ struct NewNoteView: View {
                             .padding(.horizontal, DesignSystem.Spacing.lg)
                             .padding(.bottom, DesignSystem.Spacing.lg)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .navigationTitle("New note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -2486,24 +2612,20 @@ struct NewNoteView: View {
         isSaving = true
         
         var finalContent = content
-        #if canImport(UIKit)
-        if let coordinator = coordinatorRef, let textView = coordinator.textView {
-            finalContent = coordinator.serializeContent(from: textView.attributedText)
+        if let coordinator = coordinatorRef.value, let serialized = coordinator.currentSerializedContent() {
+            finalContent = serialized
         }
-        #endif
         let newNote = Notes(context: viewContext)
         newNote.id = draftNoteCloudID
         newNote.title = title.isEmpty ? "Untitled" : title
         newNote.content = finalContent
-        #if canImport(UIKit)
-        if let coordinator = coordinatorRef, let textView = coordinator.textView {
-            newNote.imageUrls = NotePhotoRefCollector.jsonIndex(for: textView.attributedText)
+        if let coordinator = coordinatorRef.value {
+            newNote.imageUrls = coordinator.currentImageUrlsJSON()
         } else if let (attr, _) = MarkdownSerialization.deserialize(finalContent, maxWidth: 400) {
             newNote.imageUrls = NotePhotoRefCollector.jsonIndex(for: attr)
         } else {
             newNote.imageUrls = nil
         }
-        #endif
         
         newNote.isMarkedDeleted = false
         newNote.createdDate = Date()
@@ -2516,9 +2638,7 @@ struct NewNoteView: View {
         viewContext.insert(newNote)
 
         if viewContext.inkSlateSave(module: "Notes") {
-            #if canImport(UIKit)
-            coordinatorRef?.commitPendingPhotoDeletions()
-            #endif
+            coordinatorRef.value?.commitPendingPhotoDeletions()
             dismiss()
         } else {
             errorMessage = "Failed to save note."
@@ -2562,8 +2682,8 @@ struct NewProjectView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("New folder")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -2699,8 +2819,8 @@ struct ProjectSettingsView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Folder settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -2844,8 +2964,8 @@ struct TagManagerView: View {
             .scrollContentBackground(.hidden)
             }
             .navigationTitle("Tags")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -2862,10 +2982,10 @@ struct TagManagerView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingNewTag) {
+            .inkSlateSheet(isPresented: $showingNewTag) {
                 NewTagView()
             }
-            .sheet(isPresented: $showingEditTag) {
+            .inkSlateSheet(isPresented: $showingEditTag) {
                 if let selectedTag {
                     EditTagView(tag: selectedTag)
                 }
@@ -3016,8 +3136,8 @@ struct NewTagView: View {
             .scrollContentBackground(.hidden)
             }
             .navigationTitle("New tag")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -3126,8 +3246,8 @@ struct EditTagView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Edit tag")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -3243,8 +3363,8 @@ struct NoteTagEditorView: View {
             .scrollContentBackground(.hidden)
             }
             .navigationTitle("Tags")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
@@ -3398,8 +3518,8 @@ struct MoveToFolderView: View {
             .scrollContentBackground(.hidden)
             }
             .navigationTitle("Move to folder")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.background, for: .navigationBar)
+            .inlineNavigationTitle()
+            .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {

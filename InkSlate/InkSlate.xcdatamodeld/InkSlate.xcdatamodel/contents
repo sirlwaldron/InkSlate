@@ -198,6 +198,7 @@
         <attribute name="sceneryRating" optional="YES" attributeType="Integer 16" defaultValueString="5" usesScalarValueType="YES"/>
         <attribute name="state" optional="YES" attributeType="String"/>
         <attribute name="tags" optional="YES" attributeType="String"/>
+        <attribute name="videoURL" optional="YES" attributeType="String"/>
         <attribute name="visitedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="whoToBring" optional="YES" attributeType="String"/>
         <attribute name="wouldReturn" optional="YES" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
@@ -300,6 +301,7 @@
         <attribute name="rating" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="servings" optional="YES" attributeType="String" defaultValueString="1"/>
         <attribute name="source" optional="YES" attributeType="String"/>
+        <attribute name="videoURL" optional="YES" attributeType="String"/>
         <relationship name="ingredients" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="RecipeIngredient" inverseName="recipe" inverseEntity="RecipeIngredient"/>
     </entity>
     <entity name="RecipeIngredient" representedClassName="RecipeIngredient" syncable="YES" codeGenerationType="class">

@@ -41,6 +41,38 @@ enum MenuViewType: String, CaseIterable {
         default: return rawValue
         }
     }
+
+    /// Visible sidebar / launcher items, optionally pinning Home first and footer items last (macOS sidebar).
+    static func sidebarItems(
+        from order: [MenuViewType],
+        hidden: Set<MenuViewType>,
+        pinHomeToTop: Bool,
+        pinBottomItems: [MenuViewType] = [],
+        includePinnedBottom: Bool = true
+    ) -> [MenuViewType] {
+        let base = order.isEmpty ? allCases : order
+        var visible = base.filter { !hidden.contains($0) }
+
+        if pinHomeToTop {
+            visible.removeAll { $0 == .items }
+        }
+        if !pinBottomItems.isEmpty {
+            let bottomSet = Set(pinBottomItems)
+            visible.removeAll { bottomSet.contains($0) }
+        }
+
+        var result: [MenuViewType] = []
+        if pinHomeToTop, !hidden.contains(.items) {
+            result.append(.items)
+        }
+        result.append(contentsOf: visible)
+        if includePinnedBottom {
+            for item in pinBottomItems where !hidden.contains(item) {
+                result.append(item)
+            }
+        }
+        return result
+    }
 }
 
 
@@ -313,6 +345,52 @@ struct FloatingRadialLauncher: View {
             let anglePadDeg: CGFloat = 9
             
             ZStack {
+                // Skip layout until real geometry is available; with a zero size the
+                // clamped position math pins the launcher to the top of the screen.
+                if size.width > 1, size.height > 1 {
+                    launcherContent(
+                        size: size,
+                        items: items,
+                        buttonSize: buttonSize,
+                        buttonCenter: buttonCenter,
+                        outerRadius: outerRadius,
+                        innerRadius: innerRadius,
+                        anglePadDeg: anglePadDeg
+                    )
+                }
+            }
+            .onAppear {
+                loadMenuConfiguration()
+            }
+            .onReceive(
+                NotificationCenter.default
+                    .publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)
+                    .filter { ($0.object as? NSUbiquitousKeyValueStore) === cloudStore }
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
+                loadMenuConfiguration()
+            }
+            .onChange(of: isMenuOpen) { _, open in
+                if open {
+                    openWithBloom()
+                } else {
+                    closeWithSuckBack(external: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func launcherContent(
+        size: CGSize,
+        items: [MenuViewType],
+        buttonSize: CGFloat,
+        buttonCenter: CGPoint,
+        outerRadius: CGFloat,
+        innerRadius: CGFloat,
+        anglePadDeg: CGFloat
+    ) -> some View {
+            ZStack {
                 if presented {
                     Color.black.opacity(0.10)
                         .ignoresSafeArea()
@@ -368,25 +446,6 @@ struct FloatingRadialLauncher: View {
                         openWithBloom()
                     }
             }
-            .onAppear {
-                loadMenuConfiguration()
-            }
-            .onReceive(
-                NotificationCenter.default
-                    .publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)
-                    .filter { ($0.object as? NSUbiquitousKeyValueStore) === cloudStore }
-                    .receive(on: DispatchQueue.main)
-            ) { _ in
-                loadMenuConfiguration()
-            }
-            .onChange(of: isMenuOpen) { _, open in
-                if open {
-                    openWithBloom()
-                } else {
-                    closeWithSuckBack(external: true)
-                }
-            }
-        }
     }
     
     private func openWithBloom() {

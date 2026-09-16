@@ -1,6 +1,6 @@
 # InkSlate
 
-**InkSlate** is a minimalist iOS app that brings notes, budgeting, journaling, recipes, and more into one calm place—without clutter.
+**InkSlate** is a minimalist app for **iPhone, iPad, and Mac** that brings notes, budgeting, journaling, recipes, and more into one calm place—without clutter.
 
 [Privacy Policy](https://sirlwaldron.github.io/InkSlate/privacy.html) · [Terms of Use](https://sirlwaldron.github.io/InkSlate/terms.html)
 
@@ -8,7 +8,7 @@
 
 ## What is InkSlate?
 
-Open the app to a simple home screen, then jump into the tools you need from the circular menu. Everything is designed to stay out of your way: light typography, consistent layout, and optional **iCloud sync** so your data can follow you across iPhone and iPad (when you’re signed into iCloud).
+Open the app to a simple home screen, then jump into the tools you need from the circular menu (iOS/iPad) or sidebar (Mac). Everything is designed to stay out of your way: light typography, consistent layout, and optional **iCloud sync** so your data can follow you across iPhone, iPad, and Mac (when you’re signed into iCloud).
 
 Your content stays on your device and in your personal iCloud account—we don’t run our own servers for your notes or journals.
 
@@ -70,7 +70,8 @@ Pro is available as monthly or yearly subscriptions (7-day free trial) or a one-
 
 ## Requirements
 
-- **iOS 18.5** or later
+- **iOS 18.5** or later (iPhone and iPad)
+- **macOS 15** or later
 - Xcode **16** or later (for building from source)
 
 ---
@@ -83,7 +84,7 @@ Pro is available as monthly or yearly subscriptions (7-day free trial) or a one-
    cd InkSlate
    ```
 2. Open `InkSlate.xcodeproj` in Xcode.
-3. Select the **InkSlate** scheme and run on a simulator or device.
+3. Select the **InkSlate** scheme and run on a simulator, device, or **My Mac**.
 
 **StoreKit testing:** The scheme uses `InkSlate.storekit` for local subscription testing.
 

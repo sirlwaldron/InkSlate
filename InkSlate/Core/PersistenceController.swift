@@ -6,6 +6,9 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - PersistenceController
 
@@ -55,7 +58,9 @@ final class PersistenceController: ObservableObject {
             description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
             description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
             
-            description.setOption(FileProtectionType.complete as NSObject, forKey: NSPersistentStoreFileProtectionKey)
+            #if os(iOS)
+            description.setOption(FileProtectionType.completeUntilFirstUserAuthentication as NSObject, forKey: NSPersistentStoreFileProtectionKey)
+            #endif
 
             description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
                 containerIdentifier: "iCloud.com.lucas.InkSlateNew"
@@ -90,6 +95,11 @@ final class PersistenceController: ObservableObject {
                 self.migrateWantToWatchItemsIfNeeded()
                 self.migrateInkSlateSchemaFixupsIfNeeded()
             }
+
+            // Geocode coordinates for places saved before the map feature (rate-limited, background).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+                PlaceGeocodingBackfill.run(container: self.container)
+            }
         }
 
         container.viewContext.automaticallyMergesChangesFromParent = true
@@ -98,10 +108,6 @@ final class PersistenceController: ObservableObject {
         // Unpinned viewContext so CloudKit imports appear in fetches (pinning hides remote rows).
         
         lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
-
-        #if canImport(UIKit)
-        UIApplication.shared.registerForRemoteNotifications()
-        #endif
 
         setupCloudKitMonitoring()
         checkInitialCloudKitStatus()
@@ -218,6 +224,19 @@ final class PersistenceController: ObservableObject {
 
     // MARK: - Core Data Operations
 
+    func performBackgroundMaintenance(completion: (() -> Void)? = nil) {
+        container.performBackgroundTask { context in
+            context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            context.automaticallyMergesChangesFromParent = true
+            NotesEncryptionRemoval.migrateIfNeeded(in: context)
+            self.purgeTrashedNotesOlderThan30Days(in: context)
+            if context.hasChanges {
+                try? context.save()
+            }
+            completion?()
+        }
+    }
+
     func purgeTrashedNotesOlderThan30Days(in context: NSManagedObjectContext) {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
         let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "Notes")
@@ -265,6 +284,7 @@ final class PersistenceController: ObservableObject {
         
         do {
             try context.save()
+            pingSyncToPeers()
         } catch {
             logger.error("Save failed: \(error.localizedDescription)")
             ErrorHandlingService.shared.handleError(error, context: "Could not save your changes")
@@ -289,6 +309,7 @@ final class PersistenceController: ObservableObject {
         
         do {
             try context.save()
+            pingSyncToPeers()
 
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .dataSaved, object: nil)
@@ -305,6 +326,49 @@ final class PersistenceController: ObservableObject {
         try? context.setQueryGenerationFrom(.current)
     }
 
+    /// Forces an immediate CloudKit sync cycle (e.g. when the app becomes active).
+    func forceCloudKitSync() {
+        forceCloudKitSyncWorkItem?.cancel()
+        performForceCloudKitSync()
+    }
+
+    /// Coalesces rapid sync requests (KVS pings, silent pushes) into one cycle.
+    func scheduleForceCloudKitSync() {
+        forceCloudKitSyncWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.performForceCloudKitSync()
+        }
+        forceCloudKitSyncWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + forceCloudKitSyncDebounce, execute: item)
+    }
+
+    private func pingSyncToPeers() {
+        NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
+        NSUbiquitousKeyValueStore.default.synchronize()
+    }
+
+    /// Dummy write on a background context to nudge NSPersistentCloudKitContainer when push delivery is unreliable.
+    /// Avoids inserting a trashed Notes row (those could briefly/stickily appear in peer Recently Deleted).
+    private func performForceCloudKitSync() {
+        let bgContext = backgroundContext()
+        bgContext.perform {
+            let request = JournalBook.fetchRequest()
+            request.fetchLimit = 1
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \JournalBook.modifiedDate, ascending: true)]
+            if let book = try? bgContext.fetch(request).first {
+                book.modifiedDate = Date()
+                do {
+                    try bgContext.save()
+                } catch {
+                    self.logger.error("Failed to force CloudKit sync: \(error.localizedDescription)")
+                }
+            } else {
+                // Empty store — KVS ping alone (callers also invoke pingSyncToPeers).
+                self.pingSyncToPeers()
+            }
+        }
+    }
+
     func backgroundContext() -> NSManagedObjectContext {
         let context = container.newBackgroundContext()
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
@@ -318,7 +382,9 @@ final class PersistenceController: ObservableObject {
     }
     
     func ensureDailyJournalBooksConfiguredFromBookshelf() {
-        scheduleDailyJournalEnsure(deferEmptyStoreCreate: false)
+        // Same defer-when-empty behavior as store-load so we don't create a local
+        // Daily Journal before CloudKit has a chance to import the real one.
+        scheduleDailyJournalEnsure(deferEmptyStoreCreate: true)
     }
     
     private func scheduleDailyJournalEnsure(deferEmptyStoreCreate: Bool) {
@@ -350,18 +416,22 @@ final class PersistenceController: ObservableObject {
             let fetchRequest: NSFetchRequest<JournalBook> = JournalBook.fetchRequest()
             fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \JournalBook.createdDate, ascending: true)]
             let books = (try? context.fetch(fetchRequest)) ?? []
-            
-            var dailyBook: JournalBook?
+
+            func isTitledDaily(_ book: JournalBook) -> Bool {
+                book.title?.localizedCaseInsensitiveCompare("Daily Journal") == .orderedSame
+            }
+
+            var candidates = books.filter { $0.isDailyJournal || isTitledDaily($0) }
+            // Include the locally remembered book (covers a renamed daily book whose flag
+            // was clobbered by a sync from another device).
             if let stored = UserDefaults.standard.string(forKey: key),
-               let uuid = UUID(uuidString: stored) {
-                dailyBook = books.first { $0.id == uuid }
+               let uuid = UUID(uuidString: stored),
+               let storedBook = books.first(where: { $0.id == uuid }),
+               !candidates.contains(where: { $0.objectID == storedBook.objectID }) {
+                candidates.append(storedBook)
             }
-            if dailyBook == nil {
-                let titled = books.filter { $0.title?.localizedCaseInsensitiveCompare("Daily Journal") == .orderedSame }
-                dailyBook = titled.first
-            }
-            
-            if dailyBook == nil {
+
+            if candidates.isEmpty {
                 let j = JournalBook(context: context)
                 j.title = "Daily Journal"
                 j.color = "#2E7D32"
@@ -385,10 +455,31 @@ final class PersistenceController: ObservableObject {
                 }
                 return
             }
-            
-            guard let chosen = dailyBook else { return }
-            
-            for b in books {
+
+            // Pick the winner deterministically (oldest createdDate, tie-broken by UUID)
+            // so every synced device converges on the same book instead of each device
+            // flagging its own copy via its local UserDefaults.
+            let chosen = candidates.min { a, b in
+                let da = a.createdDate ?? .distantFuture
+                let db = b.createdDate ?? .distantFuture
+                if da != db { return da < db }
+                return (a.id?.uuidString ?? "") < (b.id?.uuidString ?? "")
+            }!
+
+            // Merge duplicate "Daily Journal" books (created by sync races on other
+            // devices or fresh installs) into the winner, then delete the duplicates.
+            var mergedEntries = false
+            for dupe in candidates where dupe.objectID != chosen.objectID && isTitledDaily(dupe) {
+                if let entries = dupe.entries as? Set<JournalEntry> {
+                    for entry in entries {
+                        entry.book = chosen
+                    }
+                    mergedEntries = mergedEntries || !entries.isEmpty
+                }
+                context.delete(dupe)
+            }
+
+            for b in books where !b.isDeleted {
                 let isDaily = (b.objectID == chosen.objectID)
                 if b.isDailyJournal != isDaily {
                     b.isDailyJournal = isDaily
@@ -396,18 +487,20 @@ final class PersistenceController: ObservableObject {
                 }
             }
 
-            let chosenID = chosen.id?.uuidString
+            if mergedEntries {
+                chosen.recomputeStreaks(in: context)
+            }
+
             if context.hasChanges {
                 do {
                     try context.save()
-                    if let chosenID {
-                        UserDefaults.standard.set(chosenID, forKey: key)
-                    }
                 } catch {
                     self.logger.error("runDailyJournalEnsure: save failed: \(error.localizedDescription)")
                     context.rollback()
+                    return
                 }
-            } else if let chosenID {
+            }
+            if let chosenID = chosen.id?.uuidString {
                 UserDefaults.standard.set(chosenID, forKey: key)
             }
         }
@@ -515,6 +608,7 @@ final class PersistenceController: ObservableObject {
             do {
                 if context.hasChanges {
                     try context.save()
+                    self.pingSyncToPeers()
                 }
             } catch {
                 self.logger.error("Background save failed: \(error.localizedDescription)")
@@ -535,6 +629,8 @@ final class PersistenceController: ObservableObject {
     }
     
     private var batchSaveWorkItem: DispatchWorkItem?
+    private var forceCloudKitSyncWorkItem: DispatchWorkItem?
+    private let forceCloudKitSyncDebounce: TimeInterval = 1.5
 
     // MARK: - Preview
 

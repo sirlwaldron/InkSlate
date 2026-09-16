@@ -53,6 +53,9 @@ extension JournalBook {
             countReq.resultType = .countResultType
             let entriesToday = (try? viewContext.count(for: countReq)) ?? 0
             if entriesToday > 1 {
+                // Multiple same-day entries (sync/double-save) — recompute instead of
+                // bailing, which previously stalled streak updates entirely.
+                recomputeStreaks(in: viewContext)
                 return
             }
         }
@@ -73,7 +76,7 @@ extension JournalBook {
         viewContext.saveQuietly(module: "Journal")
     }
 
-    fileprivate func recomputeStreaks(in viewContext: NSManagedObjectContext) {
+    func recomputeStreaks(in viewContext: NSManagedObjectContext) {
         let calendar = Calendar.current
         let request = NSFetchRequest<NSDictionary>(entityName: "JournalEntry")
         request.predicate = NSPredicate(format: "book == %@", self)
@@ -192,7 +195,7 @@ struct BookshelfView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingNewJournal) {
+            .inkSlateSheet(isPresented: $showingNewJournal) {
                 NewJournalView()
             }
             .onAppear {
@@ -418,7 +421,7 @@ struct EntriesListView: View {
             await refreshDataAsync()
         }
         .navigationTitle(book.title ?? "Journal")
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
+        .inkSlateSearchable(text: $searchText, prompt: "Search journals", drawerDisplayMode: .always)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -429,7 +432,7 @@ struct EntriesListView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingNewEntry) {
+        .inkSlateSheet(isPresented: $showingNewEntry) {
             NewEntryView(book: book, initialText: promptDraftForNewEntry)
                 .onDisappear {
                     promptDraftForNewEntry = nil
@@ -1024,14 +1027,14 @@ struct PromptPickerView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingPrompts) {
+        .inkSlateSheet(isPresented: $showingPrompts) {
             PromptCategoryView(
                 category: selectedCategory,
                 selectedPrompt: $selectedPrompt,
                 selectedPromptCategory: $selectedPromptCategory,
                 selectedPromptType: $selectedPromptType
             )
-            .presentationDetents([.fraction(0.5), .large])
+            .inkSlateSheetDetents([.fraction(0.5), .large])
             .presentationDragIndicator(.visible)
         }
     }

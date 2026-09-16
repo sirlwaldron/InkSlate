@@ -384,6 +384,90 @@ struct RefreshControl: View {
     }
 }
 
+enum InkSlateSearchDrawerMode {
+    case automatic
+    case always
+}
+
+// MARK: - Editor-style sheet sections (matches Notes new/edit layout)
+struct InkSlateFormCard<Content: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            Text(title)
+                .font(DesignSystem.Typography.caption)
+                .foregroundColor(DesignSystem.Colors.textTertiary)
+                .textCase(.uppercase)
+                .tracking(0.6)
+            if let subtitle {
+                Text(subtitle)
+                    .font(DesignSystem.Typography.footnote)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DesignSystem.Spacing.lg)
+        .background(DesignSystem.Colors.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous)
+                .stroke(DesignSystem.Colors.border, lineWidth: 1)
+        )
+        .padding(.horizontal, DesignSystem.Spacing.lg)
+        .padding(.top, DesignSystem.Spacing.md)
+    }
+}
+
+// MARK: - Video link (TikTok / YouTube / etc.)
+struct VideoLinkButton: View {
+    let rawURL: String
+    @Environment(\.openURL) private var openURL
+    
+    var body: some View {
+        Button {
+            guard let url = MediaLink.url(from: rawURL) else { return }
+            openURL(url)
+        } label: {
+            HStack(spacing: DesignSystem.Spacing.md) {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(DesignSystem.Colors.accent)
+                    .frame(width: 20)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Video Link")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                    Text(MediaLink.displayHost(from: rawURL) ?? rawURL)
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(DesignSystem.Colors.accent)
+                        .lineLimit(1)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
+            }
+            .padding(DesignSystem.Spacing.md)
+            .background(DesignSystem.Colors.surface)
+            .cornerRadius(DesignSystem.CornerRadius.lg)
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                    .stroke(DesignSystem.Colors.border, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(MediaLink.url(from: rawURL) == nil)
+        .accessibilityLabel("Open video link")
+    }
+}
+
 // MARK: - Cross-platform navigation (iOS-only modifiers no-op on macOS)
 extension View {
     @ViewBuilder
@@ -402,12 +486,138 @@ extension View {
         self
         #endif
     }
+
+    @ViewBuilder
+    func toolbarBackgroundForNavigationBar(_ color: Color) -> some View {
+        #if os(iOS)
+        self.toolbarBackground(color, for: .navigationBar)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func inkSlateSearchable(
+        text: Binding<String>,
+        prompt: String,
+        drawerDisplayMode: InkSlateSearchDrawerMode = .automatic
+    ) -> some View {
+        #if os(iOS)
+        let mode: SearchFieldPlacement.NavigationBarDrawerDisplayMode = drawerDisplayMode == .always ? .always : .automatic
+        self.searchable(text: text, placement: .navigationBarDrawer(displayMode: mode), prompt: prompt)
+        #else
+        self.searchable(text: text, prompt: prompt)
+        #endif
+    }
     @ViewBuilder
     func fullScreenCoverIfAvailable<Content: View>(isPresented: Binding<Bool>, content: @escaping () -> Content) -> some View {
         #if os(iOS)
         self.fullScreenCover(isPresented: isPresented, content: content)
         #else
-        self.sheet(isPresented: isPresented, content: content)
+        self.sheet(isPresented: isPresented) {
+            content().macAdaptiveSheetFrame()
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    func fullScreenCoverIfAvailable<Item: Identifiable, Content: View>(
+        item: Binding<Item?>,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        #if os(iOS)
+        self.fullScreenCover(item: item, content: content)
+        #else
+        self.sheet(item: item) { value in
+            content(value).macAdaptiveSheetFrame()
+        }
+        #endif
+    }
+
+    /// macOS sheets default to a small form size; use page-style dimensions for editors and flows.
+    @ViewBuilder
+    func macAdaptiveSheetFrame(
+        minWidth: CGFloat = 880,
+        idealWidth: CGFloat = 1040,
+        minHeight: CGFloat = 600,
+        idealHeight: CGFloat = 720
+    ) -> some View {
+        #if os(macOS)
+        self
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(
+                minWidth: minWidth,
+                idealWidth: idealWidth,
+                maxWidth: .infinity,
+                minHeight: minHeight,
+                idealHeight: idealHeight,
+                maxHeight: .infinity
+            )
+            .presentationSizing(.page)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func inkSlateSheet<Content: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        sheet(isPresented: isPresented) {
+            content().macAdaptiveSheetFrame()
+        }
+    }
+
+    @ViewBuilder
+    func inkSlateSheet<Item: Identifiable, Content: View>(
+        item: Binding<Item?>,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        sheet(item: item) { value in
+            content(value).macAdaptiveSheetFrame()
+        }
+    }
+
+    /// Fills sheet / form containers on Mac so fields are not stuck in a narrow leading column.
+    @ViewBuilder
+    func inkSlateFormContainer() -> some View {
+        #if os(macOS)
+        frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        #else
+        self
+        #endif
+    }
+
+    /// Notes-style editor sheet chrome: full background + expandable content area.
+    @ViewBuilder
+    func inkSlateEditorSheetChrome() -> some View {
+        ZStack {
+            DesignSystem.Colors.background.ignoresSafeArea()
+            self
+        }
+        .inkSlateFormContainer()
+    }
+
+    /// Full-width list modules in the Mac main window (Settings, Profile, etc.).
+    @ViewBuilder
+    func inkSlateMacListLayout() -> some View {
+        #if os(macOS)
+        frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .background(DesignSystem.Colors.background)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func inkSlateSheetDetents(_ detents: Set<PresentationDetent>) -> some View {
+        #if os(iOS)
+        presentationDetents(detents)
+        #else
+        self
         #endif
     }
 

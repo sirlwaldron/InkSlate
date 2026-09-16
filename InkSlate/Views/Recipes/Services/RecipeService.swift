@@ -100,16 +100,16 @@ struct RecipeService {
         recipe.updateDetails(steps: steps, notes: notes)
         recipe.updateDietaryTags(dietaryTags)
         
-        for ingredientData in ingredients {
+        for ingredientData in ingredients where ingredientData.hasName {
             let ingredient = RecipeIngredient(context: context)
             ingredient.id = UUID()
             ingredient.createdDate = Date()
             ingredient.modifiedDate = Date()
-            ingredient.name = ingredientData.name
+            ingredient.name = ingredientData.name.trimmingCharacters(in: .whitespacesAndNewlines)
             let rawAmount = ingredientData.amount.trimmingCharacters(in: .whitespacesAndNewlines)
             ingredient.amount = parseAmountString(rawAmount) ?? 0.0
             ingredient.notes = rawAmount
-            ingredient.unit = ingredientData.unit
+            ingredient.unit = ingredientData.unit.trimmingCharacters(in: .whitespacesAndNewlines)
             ingredient.recipe = recipe
         }
         
@@ -118,33 +118,54 @@ struct RecipeService {
     
     // MARK: - Shopping List Helpers
     
+    /// Adds recipe ingredients to the shopping list.
+    /// - Parameter ingredients: When non-nil, only these ingredients are added; otherwise all recipe ingredients.
+    @discardableResult
     static func addRecipeIngredientsToShoppingList(
         recipe: Recipe,
-        in context: NSManagedObjectContext
-    ) throws {
-        let ingredients = recipe.ingredientsArray
+        in context: NSManagedObjectContext,
+        ingredients selectedIngredients: [RecipeIngredient]? = nil
+    ) throws -> Int {
+        let ingredients = selectedIngredients ?? recipe.ingredientsArray
         let now = Date()
 
-// Use case-insensitive normalization so "Milk" and "milk" are treated as duplicates.
-        let existingNames: Set<String> = {
+        // Dedupe against any existing item (checked or not). Re-adding a checked
+        // "Milk" unchecks/updates it instead of creating a second row.
+        let existingByName: [String: ShoppingItemEntity] = {
             let fetchRequest: NSFetchRequest<ShoppingItemEntity> = ShoppingItemEntity.fetchRequest()
-            fetchRequest.predicate = NSPredicate(format: "isChecked == NO")
             fetchRequest.includesPendingChanges = true
-            fetchRequest.propertiesToFetch = ["name"]
-            fetchRequest.returnsObjectsAsFaults = true
-
             let results = (try? context.fetch(fetchRequest)) ?? []
-            return Set(results.compactMap { ($0.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            var map: [String: ShoppingItemEntity] = [:]
+            for item in results {
+                let key = (item.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !key.isEmpty else { continue }
+                // Prefer an unchecked row if both somehow exist.
+                if let prior = map[key], prior.isChecked == false { continue }
+                map[key] = item
+            }
+            return map
         }()
 
-        var seenNames = existingNames
+        var seenNames = Set(existingByName.keys)
+        var addedCount = 0
         
         for ingredient in ingredients {
             let normalized = (ingredient.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !normalized.isEmpty else { continue }
 
+            if let existing = existingByName[normalized] {
+                if existing.isChecked {
+                    existing.isChecked = false
+                    existing.amount = ingredient.rawAmountString
+                    existing.unit = ingredient.unit ?? existing.unit
+                    existing.fromRecipe = recipe.name
+                    existing.modifiedDate = now
+                    addedCount += 1
+                }
+                continue
+            }
             if seenNames.contains(normalized) {
-                continue  // Skip duplicate
+                continue
             }
             seenNames.insert(normalized)
             
@@ -158,9 +179,25 @@ struct RecipeService {
             item.category = "Groceries"
             item.fromRecipe = recipe.name
             item.isChecked = false
+            addedCount += 1
         }
         
         try context.saveWithCloudKitSync()
+        return addedCount
+    }
+    
+    /// Adds a single recipe ingredient to the shopping list.
+    @discardableResult
+    static func addIngredientToShoppingList(
+        _ ingredient: RecipeIngredient,
+        recipe: Recipe,
+        in context: NSManagedObjectContext
+    ) throws -> Int {
+        try addRecipeIngredientsToShoppingList(
+            recipe: recipe,
+            in: context,
+            ingredients: [ingredient]
+        )
     }
     
     // MARK: - Search Helpers

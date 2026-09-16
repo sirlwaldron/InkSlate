@@ -17,87 +17,90 @@ struct MindMapListView: View {
     @State private var searchText = ""
     
     var body: some View {
-        List {
-            if filteredMindMaps.isEmpty {
-                mindMapsEmptyState
-            } else {
-                Section {
-                    ForEach(filteredMindMaps) { mindMap in
-                        NavigationLink(destination: MindMapDetailView(mindMap: mindMap)) {
-                            MindMapRow(mindMap: mindMap)
-                        }
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("Delete") {
-                                viewContext.delete(mindMap)
-                                viewContext.inkSlateSave(module: "Mind Maps")
+        // Own stack so detail pushes don't stick on ContentView's outer NavigationStack.
+        NavigationStack {
+            List {
+                if filteredMindMaps.isEmpty {
+                    mindMapsEmptyState
+                } else {
+                    Section {
+                        ForEach(filteredMindMaps) { mindMap in
+                            NavigationLink(destination: MindMapDetailView(mindMap: mindMap)) {
+                                MindMapRow(mindMap: mindMap)
                             }
-                            .tint(.red)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("Delete") {
+                                    viewContext.delete(mindMap)
+                                    viewContext.inkSlateSave(module: "Mind Maps")
+                                }
+                                .tint(.red)
+                                
+                                Button("Rename") {
+                                    editingMindMap = mindMap
+                                    newMindMapName = mindMap.title ?? "Untitled"
+                                    showingAlert = true
+                                }
+                                .tint(.blue)
+                            }
+                            .contextMenu {
+                                Button {
+                                    editingMindMap = mindMap
+                                    newMindMapName = mindMap.title ?? "Untitled"
+                                    showingAlert = true
+                                } label: {
+                                    Label("Rename", systemImage: "pencil")
+                                }
+                                Button(role: .destructive) {
+                                    viewContext.delete(mindMap)
+                                    viewContext.inkSlateSave(module: "Mind Maps")
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Mind Maps")
+                                .font(DesignSystem.Typography.title1)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                .textCase(nil)
                             
-                            Button("Rename") {
-                                editingMindMap = mindMap
-                                newMindMapName = mindMap.title ?? "Untitled"
-                                showingAlert = true
-                            }
-                            .tint(.blue)
+                            Text("Tap to open. Long‑press nodes inside a map to view, edit, or delete.")
+                                .font(DesignSystem.Typography.callout)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                                .textCase(nil)
                         }
-                        .contextMenu {
-                            Button {
-                                editingMindMap = mindMap
-                                newMindMapName = mindMap.title ?? "Untitled"
-                                showingAlert = true
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                viewContext.delete(mindMap)
-                                viewContext.inkSlateSave(module: "Mind Maps")
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
+                        .padding(.top, 6)
                     }
-                } header: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Mind Maps")
-                            .font(DesignSystem.Typography.title1)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(DesignSystem.Colors.background.ignoresSafeArea())
+            .navigationTitle("Mind Maps")
+            .inkSlateSearchable(text: $searchText, prompt: "Search mind maps", drawerDisplayMode: .automatic)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: createNewMindMap) {
+                        Image(systemName: "plus")
                             .foregroundColor(DesignSystem.Colors.textPrimary)
-                            .textCase(nil)
-                        
-                        Text("Tap to open. Long‑press nodes inside a map to view, edit, or delete.")
-                            .font(DesignSystem.Typography.callout)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                            .textCase(nil)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
                     }
-                    .padding(.top, 6)
+                    .accessibilityLabel("New mind map")
                 }
             }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(DesignSystem.Colors.background.ignoresSafeArea())
-        .navigationTitle("Mind Maps")
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search mind maps")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: createNewMindMap) {
-                    Image(systemName: "plus")
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
-                }
-                .accessibilityLabel("New mind map")
-            }
-        }
-        .alert("Rename Mind Map", isPresented: $showingAlert) {
-            TextField("Name", text: $newMindMapName)
-            Button("Cancel") { }
-            Button("Save") {
-                if let mindMap = editingMindMap {
-                    mindMap.title = newMindMapName
-                    mindMap.modifiedDate = Date()
-                    viewContext.inkSlateSave(module: "Mind Maps")
+            .alert("Rename Mind Map", isPresented: $showingAlert) {
+                TextField("Name", text: $newMindMapName)
+                Button("Cancel") { }
+                Button("Save") {
+                    if let mindMap = editingMindMap {
+                        mindMap.title = newMindMapName
+                        mindMap.modifiedDate = Date()
+                        viewContext.inkSlateSave(module: "Mind Maps")
+                    }
                 }
             }
         }
@@ -276,7 +279,7 @@ struct MindMapDetailView: View {
         .inlineNavigationTitle()
         .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .cancellationAction) {
                 Button(action: navigationStack.isEmpty ? { dismiss() } : navigateBack) {
                     Text("Back")
                         .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -314,7 +317,7 @@ struct MindMapDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingSearch) {
+        .inkSlateSheet(isPresented: $showingSearch) {
             MindMapSearchView(
                 mindMap: mindMap,
                 searchText: $searchText,
@@ -324,7 +327,7 @@ struct MindMapDetailView: View {
                 }
             )
         }
-        .sheet(isPresented: $showingEditSheet) {
+        .inkSlateSheet(isPresented: $showingEditSheet) {
             if let selectedNode = selectedNodeForAction {
                 EditNodeView(
                     node: selectedNode,
@@ -339,7 +342,7 @@ struct MindMapDetailView: View {
                     .padding()
             }
         }
-        .sheet(isPresented: $showingViewSheet) {
+        .inkSlateSheet(isPresented: $showingViewSheet) {
             if let selectedNode = selectedNodeForAction {
                 ViewNodeView(node: selectedNode)
             } else {
@@ -790,7 +793,7 @@ private struct MindMapSearchView: View {
                 }
             }
             .navigationTitle("Search Nodes")
-            .searchable(text: $searchDebouncer.searchText, placement: .navigationBarDrawer(displayMode: .always))
+            .inkSlateSearchable(text: $searchDebouncer.searchText, prompt: "Search nodes", drawerDisplayMode: .always)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
@@ -1071,7 +1074,7 @@ struct EditNodeView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: DesignSystem.Spacing.xl) {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("Node Title")
@@ -1108,6 +1111,7 @@ struct EditNodeView: View {
             }
             .padding(DesignSystem.Spacing.lg)
             .background(DesignSystem.Colors.background)
+            .inkSlateFormContainer()
             .navigationTitle("Edit Node")
             .inlineNavigationTitle()
             .toolbar {
@@ -1149,7 +1153,7 @@ struct ViewNodeView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Title")
@@ -1184,6 +1188,7 @@ struct ViewNodeView: View {
                 Spacer()
             }
             .padding()
+            .inkSlateFormContainer()
             .navigationTitle("View Node")
             .inlineNavigationTitle()
             .toolbar {

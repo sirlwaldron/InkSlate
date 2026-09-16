@@ -55,6 +55,26 @@ struct RecurrenceRule: Codable {
             return nil
         }
     }
+
+    /// Next calendar day at local noon after a completion — when the task uncrosses.
+    static func resetDate(afterCompletion completedDate: Date, calendar: Calendar = .current) -> Date {
+        let nextDayStart = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: completedDate)
+        ) ?? completedDate.addingTimeInterval(86_400)
+        return calendar.date(bySettingHour: 12, minute: 0, second: 0, of: nextDayStart) ?? nextDayStart
+    }
+
+    /// Next upcoming local noon from `date` (today if still before noon, otherwise tomorrow).
+    static func nextCalendarNoon(after date: Date = Date(), calendar: Calendar = .current) -> Date {
+        if let todayNoon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: date),
+           date < todayNoon {
+            return todayNoon
+        }
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) ?? date.addingTimeInterval(86_400)
+        return calendar.date(bySettingHour: 12, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+    }
 }
 
 // MARK: - Color Conversion Extension
@@ -89,6 +109,8 @@ struct TodoMainView: View {
     @State private var showingAddTab = false
     @State private var showingEditTab = false
     @State private var editingTab: TodoTab?
+    @State private var tabPendingDelete: TodoTab?
+    @State private var showingDeleteTabConfirmation = false
     
     var body: some View {
         NavigationStack {
@@ -105,7 +127,7 @@ struct TodoMainView: View {
                                 editingTab = tab
                                 showingEditTab = true
                             },
-                            onDeleteTab: deleteTab
+                            onDeleteTab: requestDeleteTab
                         )
                         .padding(.bottom, DesignSystem.Spacing.md)
                     }
@@ -150,6 +172,8 @@ struct TodoMainView: View {
                 if selectedTab == nil && !tabs.isEmpty {
                     selectedTab = tabs.first
                 }
+                resetCompletedRecurringTasksIfNeeded()
+                cleanupRecurringDuplicatesIfNeeded()
             }
             .onChange(of: tabs.count) { _, _ in
                 reconcileSelectedTab()
@@ -157,24 +181,64 @@ struct TodoMainView: View {
             .onChange(of: tabs.first?.objectID) { _, _ in
                 reconcileSelectedTab()
             }
-            .sheet(isPresented: $showingAddTask) {
+            .onReceive(NotificationCenter.default.publisher(for: PlatformLifecycle.didBecomeActive)) { _ in
+                resetCompletedRecurringTasksIfNeeded()
+                cleanupRecurringDuplicatesIfNeeded()
+            }
+            .task {
+                while !Task.isCancelled {
+                    resetCompletedRecurringTasksIfNeeded()
+                    let delay = max(RecurrenceRule.nextCalendarNoon().timeIntervalSinceNow, 1)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+            .alert("Delete List", isPresented: $showingDeleteTabConfirmation) {
+                Button("Cancel", role: .cancel) {
+                    tabPendingDelete = nil
+                }
+                Button("Delete", role: .destructive) {
+                    if let tab = tabPendingDelete {
+                        deleteTab(tab)
+                    }
+                    tabPendingDelete = nil
+                }
+            } message: {
+                deleteTabConfirmationMessage
+            }
+            .inkSlateSheet(isPresented: $showingAddTask) {
                 AddTodoTaskView(selectedTab: selectedTab, availableTabs: Array(tabs))
-                    .presentationDetents([.fraction(0.5), .large])
+                    .inkSlateSheetDetents([.fraction(0.5), .large])
+                    #if os(iOS)
                     .presentationDragIndicator(.visible)
+                    #endif
             }
-            .sheet(isPresented: $showingAddTab) {
+            .inkSlateSheet(isPresented: $showingAddTab) {
                 AddTodoTabView()
-                    .presentationDetents([.fraction(0.5)])
+                    .inkSlateSheetDetents([.fraction(0.5)])
+                    #if os(iOS)
                     .presentationDragIndicator(.visible)
+                    #endif
             }
-            .sheet(isPresented: $showingEditTab) {
+            .inkSlateSheet(isPresented: $showingEditTab) {
                 if let tab = editingTab {
                     EditTodoTabView(tab: tab)
-                        .presentationDetents([.fraction(0.5)])
+                        .inkSlateSheetDetents([.fraction(0.5)])
+                        #if os(iOS)
                         .presentationDragIndicator(.visible)
+                        #endif
                 }
             }
         }
+    }
+
+    private var deleteTabConfirmationMessage: Text {
+        let name = tabPendingDelete?.name ?? "Unknown"
+        let count = tabPendingDelete?.tasks?.count ?? 0
+        if count > 0 {
+            let taskWord = count == 1 ? "task" : "tasks"
+            return Text("Delete \"\(name)\" and its \(count) \(taskWord)? This cannot be undone.")
+        }
+        return Text("Delete \"\(name)\"? This cannot be undone.")
     }
     
     private func reconcileSelectedTab() {
@@ -190,15 +254,126 @@ struct TodoMainView: View {
 
         selectedTab = tabs.first
     }
+
+    private func requestDeleteTab(_ tab: TodoTab) {
+        tabPendingDelete = tab
+        showingDeleteTabConfirmation = true
+    }
     
     private func deleteTab(_ tab: TodoTab) {
         withAnimation {
+            // Explicitly remove tasks so CloudKit sync is consistent with cascade.
+            if let tasks = tab.tasks as? Set<TodoTask> {
+                for task in tasks {
+                    viewContext.delete(task)
+                }
+            }
             viewContext.delete(tab)
             viewContext.inkSlateSave(module: "To-Do")
-            if selectedTab === tab {
-                selectedTab = tabs.first
+            if selectedTab?.objectID == tab.objectID {
+                selectedTab = tabs.first(where: { $0.objectID != tab.objectID })
             }
         }
+    }
+
+    /// Uncross recurring tasks the day after completion at local noon.
+    private func resetCompletedRecurringTasksIfNeeded() {
+        let request: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "isCompleted == YES AND recurrenceType != nil AND recurrenceType != %@ AND recurrenceType != %@",
+            "",
+            "none"
+        )
+
+        guard let completedRecurring = try? viewContext.fetch(request) else { return }
+
+        let now = Date()
+        var didChange = false
+
+        for task in completedRecurring {
+            guard let completedDate = task.completedDate else { continue }
+            let resetAt = RecurrenceRule.resetDate(afterCompletion: completedDate)
+            guard now >= resetAt else { continue }
+
+            // Drop incomplete clones spawned by the old duplicate-on-complete behavior.
+            removeIncompleteClones(of: task)
+
+            task.isCompleted = false
+            task.completedDate = nil
+            task.modifiedDate = now
+
+            if let rule = RecurrenceRule.decode(from: task.recurrenceRule) {
+                let base = Calendar.current.startOfDay(for: now)
+                let next = rule.nextDueDate(from: base) ?? base
+                task.dueDate = next
+                task.nextDueDate = next
+            }
+
+            didChange = true
+        }
+
+        if didChange {
+            viewContext.inkSlateSave(module: "To-Do")
+        }
+    }
+
+    /// Removes leftover incomplete duplicates from the previous recurrence model.
+    private func cleanupRecurringDuplicatesIfNeeded() {
+        let request: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "recurrenceType != nil AND recurrenceType != %@ AND recurrenceType != %@",
+            "",
+            "none"
+        )
+
+        guard let recurringTasks = try? viewContext.fetch(request), !recurringTasks.isEmpty else { return }
+
+        var groups: [String: [TodoTask]] = [:]
+        for task in recurringTasks {
+            let key = recurringIdentityKey(for: task)
+            groups[key, default: []].append(task)
+        }
+
+        var didChange = false
+        for tasks in groups.values where tasks.count > 1 {
+            let sorted = tasks.sorted { ($0.createdDate ?? .distantPast) < ($1.createdDate ?? .distantPast) }
+            // Prefer keeping a completed instance (it will reset in place) when present;
+            // otherwise keep the oldest incomplete task.
+            let keeper = sorted.first(where: \.isCompleted) ?? sorted.first
+            guard let keeper else { continue }
+
+            for task in sorted where task.objectID != keeper.objectID {
+                viewContext.delete(task)
+                didChange = true
+            }
+        }
+
+        if didChange {
+            viewContext.inkSlateSave(module: "To-Do")
+        }
+    }
+
+    private func removeIncompleteClones(of task: TodoTask) {
+        guard let tab = task.tab else { return }
+        let request: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "tab == %@ AND isCompleted == NO AND title == %@ AND recurrenceRule == %@ AND SELF != %@",
+            tab,
+            task.title ?? "",
+            task.recurrenceRule ?? "",
+            task
+        )
+        guard let clones = try? viewContext.fetch(request) else { return }
+        for clone in clones {
+            viewContext.delete(clone)
+        }
+    }
+
+    private func recurringIdentityKey(for task: TodoTask) -> String {
+        let tabID = task.tab?.objectID.uriRepresentation().absoluteString ?? "nil"
+        let title = task.title ?? ""
+        let rule = task.recurrenceRule ?? task.recurrenceType ?? ""
+        return "\(tabID)|\(title)|\(rule)"
     }
 }
 
@@ -388,7 +563,6 @@ struct TabButtonView: View {
             Button("Delete List", role: .destructive) {
                 onDelete()
             }
-            .disabled((tab.tasks?.count ?? 0) > 0)
         }
     }
 }
@@ -505,9 +679,6 @@ struct TodoTaskRow: View {
     }
     
     private func toggleTaskCompletion(animation: Animation?) {
-        let ruleString = task.recurrenceRule
-        let recurrenceRule = (task.isCompleted == false) ? RecurrenceRule.decode(from: ruleString) : nil
-
         let applyToggle = {
             task.isCompleted.toggle()
             task.completedDate = task.isCompleted ? Date() : nil
@@ -520,52 +691,9 @@ struct TodoTaskRow: View {
             applyToggle()
         }
 
-        if task.isCompleted, hasRecurrence, let recurrenceRule, let ruleString {
-            createNextRecurrenceIfNeeded(from: task, rule: recurrenceRule, ruleString: ruleString)
-        }
-
+        // Recurring tasks stay crossed out until the next day at local noon,
+        // then reset in place (see TodoMainView.resetCompletedRecurringTasksIfNeeded).
         viewContext.inkSlateSave(module: "To-Do")
-    }
-    
-    private func createNextRecurrenceIfNeeded(from originalTask: TodoTask, rule: RecurrenceRule, ruleString: String) {
-        guard let baseDate = originalTask.dueDate ?? originalTask.createdDate,
-              let nextDue = rule.nextDueDate(from: baseDate) else { return }
-
-        if nextRecurrenceAlreadyExists(in: originalTask, ruleString: ruleString, nextDue: nextDue) {
-            return
-        }
-        
-        let now = Date()
-        let newTask = TodoTask(context: viewContext)
-        newTask.id = UUID()
-        newTask.title = originalTask.title
-        newTask.notes = originalTask.notes
-        newTask.tab = originalTask.tab
-        newTask.createdDate = now
-        newTask.modifiedDate = now  // Critical for CloudKit sync
-        newTask.dueDate = nextDue
-        newTask.isCompleted = false
-        newTask.recurrenceType = originalTask.recurrenceType
-        newTask.recurrenceRule = originalTask.recurrenceRule
-        newTask.nextDueDate = rule.nextDueDate(from: nextDue)
-        newTask.priority = originalTask.priority
-        
-    }
-
-    private func nextRecurrenceAlreadyExists(in originalTask: TodoTask, ruleString: String, nextDue: Date) -> Bool {
-        guard let tab = originalTask.tab else { return false }
-
-        let request: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
-        request.fetchLimit = 1
-        request.predicate = NSPredicate(
-            format: "tab == %@ AND isCompleted == NO AND recurrenceRule == %@ AND dueDate == %@",
-            tab,
-            ruleString,
-            nextDue as NSDate
-        )
-
-        guard let count = try? viewContext.count(for: request) else { return true }
-        return count > 0
     }
     
     private func deleteTask() {
@@ -603,7 +731,7 @@ struct AddTodoTaskView: View {
     private let weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.lg) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -788,6 +916,7 @@ struct AddTodoTaskView: View {
             } message: {
                 Text(errorMessage)
             }
+            .inkSlateFormContainer()
         }
         .onAppear {
             selectedTabID = selectedTab?.objectID ?? availableTabs.first?.objectID
@@ -884,7 +1013,7 @@ struct AddTodoTabView: View {
     ]
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: DesignSystem.Spacing.xl) {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("List Name")
@@ -955,6 +1084,7 @@ struct AddTodoTabView: View {
             } message: {
                 Text(errorMessage)
             }
+            .inkSlateFormContainer()
         }
     }
     
@@ -1013,7 +1143,7 @@ struct EditTodoTabView: View {
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: DesignSystem.Spacing.xl) {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("List Name")
@@ -1053,18 +1183,16 @@ struct EditTodoTabView: View {
                     }
                 }
                 
-                if (tab.tasks?.count ?? 0) == 0 {
-                    Button {
-                        showingDeleteConfirmation = true
-                    } label: {
-                        Text("Delete List")
-                            .font(DesignSystem.Typography.body)
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding(DesignSystem.Spacing.md)
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(DesignSystem.CornerRadius.sm)
-                    }
+                Button {
+                    showingDeleteConfirmation = true
+                } label: {
+                    Text("Delete List")
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity)
+                        .padding(DesignSystem.Spacing.md)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(DesignSystem.CornerRadius.sm)
                 }
                 
                 Spacer()
@@ -1104,8 +1232,15 @@ struct EditTodoTabView: View {
                     deleteTab()
                 }
             } message: {
-                Text("Are you sure you want to delete '\(tab.name ?? "Unknown")'? This action cannot be undone.")
+                let count = tab.tasks?.count ?? 0
+                if count > 0 {
+                    let taskWord = count == 1 ? "task" : "tasks"
+                    Text("Delete \"\(tab.name ?? "Unknown")\" and its \(count) \(taskWord)? This cannot be undone.")
+                } else {
+                    Text("Are you sure you want to delete \"\(tab.name ?? "Unknown")\"? This action cannot be undone.")
+                }
             }
+            .inkSlateFormContainer()
         }
     }
     
@@ -1136,6 +1271,11 @@ struct EditTodoTabView: View {
     }
     
     private func deleteTab() {
+        if let tasks = tab.tasks as? Set<TodoTask> {
+            for task in tasks {
+                viewContext.delete(task)
+            }
+        }
         viewContext.delete(tab)
         if viewContext.inkSlateSave(module: "To-Do") {
             dismiss()

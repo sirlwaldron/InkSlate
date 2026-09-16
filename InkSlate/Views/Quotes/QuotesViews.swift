@@ -183,7 +183,7 @@ struct ModernQuotesMainView: View {
             }
         }
         .background(DesignSystem.Colors.background)
-        .sheet(isPresented: $showingAddQuote) {
+        .inkSlateSheet(isPresented: $showingAddQuote) {
             ModernAddQuoteView()
         }
     }
@@ -358,14 +358,14 @@ struct ModernQuoteCard: View {
                 Label("Delete", systemImage: "trash")
             }
         }
-        .sheet(isPresented: $showingEditSheet) {
+        .inkSlateSheet(isPresented: $showingEditSheet) {
             ModernEditQuoteView(quote: quote)
         }
-        .sheet(isPresented: $showingDetailView) {
+        .inkSlateSheet(isPresented: $showingDetailView) {
             EnhancedModernQuoteDetailView(quote: quote)
         }
-        .sheet(isPresented: $showingShareSheet) {
-            ShareSheet(items: shareItems)
+        .inkSlateSheet(isPresented: $showingShareSheet) {
+            PlatformShareSheet(items: shareItems)
         }
         .alert("Delete Quote", isPresented: $showingDeleteAlert) {
             Button("Cancel", role: .cancel) { }
@@ -458,7 +458,7 @@ struct ModernAddQuoteView: View {
     @State private var selectedCategory: QuoteCategory = .motivation
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -526,6 +526,7 @@ struct ModernAddQuoteView: View {
                 .padding(DesignSystem.Spacing.xl)
             }
             .background(DesignSystem.Colors.background)
+            .inkSlateFormContainer()
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -581,7 +582,7 @@ struct ModernEditQuoteView: View {
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -649,6 +650,7 @@ struct ModernEditQuoteView: View {
                 .padding(DesignSystem.Spacing.xl)
             }
             .background(DesignSystem.Colors.background)
+            .inkSlateFormContainer()
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -692,7 +694,7 @@ struct EnhancedModernQuoteDetailView: View {
     @State private var showingDeleteAlert = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     if let category = QuoteCategory(rawValue: quote.category ?? "") {
@@ -872,7 +874,7 @@ struct EnhancedModernQuoteDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingEditSheet) {
+        .inkSlateSheet(isPresented: $showingEditSheet) {
             ModernEditQuoteView(quote: quote)
         }
         .alert("Delete Quote", isPresented: $showingDeleteAlert) {

@@ -7,204 +7,6 @@ import os.log
 import UIKit
 @preconcurrency import PhotosUI
 
-// MARK: - Theme
-
-struct EditorTheme {
-    static var baseFont: UIFont { UIFont.preferredFont(forTextStyle: .body) }
-    static func font(size: CGFloat, weight: UIFont.Weight = .regular, italic: Bool = false) -> UIFont {
-        var f = UIFont.systemFont(ofSize: size, weight: weight)
-        if italic, let d = f.fontDescriptor.withSymbolicTraits(.traitItalic) {
-            f = UIFont(descriptor: d, size: size)
-        }
-        return f
-    }
-    static var textColor: UIColor { .label }
-    static var linkColor: UIColor { .systemBlue }
-}
-
-// MARK: - Editor Content Parser
-
-struct EditorContentParser {
-    static func deserialize(_ text: String, maxWidth: CGFloat) -> NSAttributedString {
-        let baseAttrs: [NSAttributedString.Key: Any] = [
-            .font: EditorTheme.baseFont,
-            .foregroundColor: EditorTheme.textColor
-        ]
-        let m = NSMutableAttributedString(string: text, attributes: baseAttrs)
-        
-        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
-            let ns = text as NSString
-            let full = NSRange(location: 0, length: ns.length)
-            detector.enumerateMatches(in: text, options: [], range: full) { result, _, _ in
-                guard let result, let url = result.url, result.range.length > 0 else { return }
-                m.addAttribute(.link, value: url, range: result.range)
-                m.addAttribute(.foregroundColor, value: EditorTheme.linkColor, range: result.range)
-                m.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: result.range)
-            }
-        }
-        
-        let style = NSMutableParagraphStyle()
-        style.lineBreakMode = .byWordWrapping
-        m.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: m.length))
-        return m
-    }
-}
-
-struct MarkdownSerialization {
-    private static let attrPrefix = "⟪ATTR⟫"
-    private static let attrSuffix = "⟪/ATTR⟫"
-    private static let serializationLog = Logger(subsystem: "com.lucas.InkSlateNew", category: "MarkdownSerialization")
-    
-    static func serialize(_ attributed: NSAttributedString) -> String {
-        let mutable = attributed as? NSMutableAttributedString ?? NSMutableAttributedString(attributedString: attributed)
-        let forArchive = NotePhotoAttachment.stripHeavyImagesForPersistence(mutable)
-
-        do {
-            let data = try NSKeyedArchiver.archivedData(withRootObject: forArchive, requiringSecureCoding: false)
-            let encoded = data.base64EncodedString()
-            let plain = plainTextRepresentation(of: mutable)
-            return attrPrefix + encoded + attrSuffix + plain
-        } catch {
-            return plainTextRepresentation(of: mutable)
-        }
-    }
-    
-    static func deserialize(_ text: String, maxWidth: CGFloat) -> (NSAttributedString, String)? {
-        guard let components = components(from: text) else {
-            return nil
-        }
-        
-        let base64 = components.base64
-        let plainText = components.plainText
-        guard let data = Data(base64Encoded: base64) else {
-            return (EditorContentParser.deserialize(plainText, maxWidth: maxWidth), plainText)
-        }
-        
-        let allowedClasses: [AnyClass] = [
-            NSAttributedString.self,
-            NSMutableAttributedString.self,
-            UIColor.self,
-            UIFont.self,
-            UIFontDescriptor.self,
-            NSURL.self,
-            NSData.self,
-            NSDictionary.self,
-            NSMutableDictionary.self,
-            NSString.self,
-            NSNumber.self,
-            NSParagraphStyle.self,
-            NSMutableParagraphStyle.self,
-            NSTextTab.self,
-            NSShadow.self,
-            NSTextAttachment.self,
-            UIImage.self,
-            NSValue.self,
-            NSArray.self,
-            NSMutableArray.self
-        ]
-        
-        do {
-            guard let attributed = try NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString else {
-                return (EditorContentParser.deserialize(plainText, maxWidth: maxWidth), plainText)
-            }
-            
-            let mutable = NSMutableAttributedString(attributedString: attributed)
-// Preserve font attributes after CloudKit merges.
-            restoreFontAttributes(in: mutable)
-            return (mutable, plainText)
-        } catch {
-            serializationLog.error("Rich note deserialize failed; falling back to plain text (inline photos will be missing until fixed). \(error.localizedDescription, privacy: .public)")
-            return (EditorContentParser.deserialize(plainText, maxWidth: maxWidth), plainText)
-        }
-    }
-    
-    static func plainText(from serialized: String) -> String {
-        if let components = components(from: serialized) {
-            return components.plainText
-        }
-        let fallback = EditorContentParser.deserialize(serialized, maxWidth: 300)
-        return plainTextRepresentation(of: fallback)
-    }
-    
-    
-    private static func components(from text: String) -> (base64: String, plainText: String)? {
-        guard
-            let prefixRange = text.range(of: attrPrefix),
-            let suffixRange = text.range(of: attrSuffix, range: prefixRange.upperBound..<text.endIndex)
-        else { return nil }
-        
-        let base64 = String(text[prefixRange.upperBound..<suffixRange.lowerBound])
-        let plain = String(text[suffixRange.upperBound...])
-        return (base64, plain)
-    }
-    
-    private static func plainTextRepresentation(of attributed: NSAttributedString) -> String {
-        guard attributed.length > 0 else { return "" }
-        let full = attributed.string as NSString
-        var result = ""
-        var idx = 0
-        var orderedCounter = 0
-        while idx < attributed.length {
-            let paraRange = full.paragraphRange(for: NSRange(location: idx, length: 0))
-            let rawParagraph = full.substring(with: paraRange)
-            let lineContent = rawParagraph
-                .replacingOccurrences(of: "\u{FFFC}", with: " ")
-                .trimmingCharacters(in: .newlines)
-            let ps = attributed.attribute(.paragraphStyle, at: paraRange.location, effectiveRange: nil) as? NSParagraphStyle
-            if let lists = ps?.textLists, let deepest = lists.last {
-                let isOrdered = deepest.markerFormat == .decimal
-                if isOrdered {
-                    orderedCounter += 1
-                    result += "\(orderedCounter). " + lineContent + "\n"
-                } else {
-                    orderedCounter = 0
-                    result += "• " + lineContent + "\n"
-                }
-            } else {
-                orderedCounter = 0
-                result += rawParagraph
-            }
-            idx = paraRange.location + paraRange.length
-        }
-        return result.trimmingCharacters(in: .newlines)
-    }
-    
-    /// Restores font attributes after deserialization to ensure traits (bold, italic) are preserved This is especially important after CloudKit...
-    private static func restoreFontAttributes(in mutable: NSMutableAttributedString) {
-        let range = NSRange(location: 0, length: mutable.length)
-        mutable.enumerateAttributes(in: range, options: []) { attrs, r, _ in
-            guard let font = attrs[.font] as? UIFont else { return }
-            let descriptor = font.fontDescriptor
-            let traits = descriptor.symbolicTraits
-            
-// Rebuild font with explicit traits (CloudKit can drop symbolic traits).
-            if traits.rawValue != 0 {
-                if let newDescriptor = descriptor.withSymbolicTraits(traits) {
-                    let restoredFont = UIFont(descriptor: newDescriptor, size: font.pointSize)
-                    mutable.addAttribute(.font, value: restoredFont, range: r)
-                }
-            }
-        }
-    }
-}
-
-
-// MARK: - Markdown Actions
-
-enum MarkdownAction: Int, CaseIterable, Hashable {
-    case bold = 0, italic, strikethrough, underline
-    case removeFormat
-    case header1, header2, header3
-    case bulletList, numberedList, indent, outdent
-    case alignLeft, alignCenter, alignRight
-    case link
-    case undo, redo
-}
-
-extension Notification.Name {
-    static let editorActiveStylesDidChange = Notification.Name("EditorActiveStylesDidChange")
-}
-
 // MARK: - Helpers
 
 private extension UITextView {
@@ -305,8 +107,11 @@ struct MarkdownEditor: UIViewRepresentable {
         let attributed = context.coordinator.deserializeContent(text)
         textView.setAttributedStringForBindingSync(attributed)
         context.coordinator.refreshKnownPhotoRecordNames(from: textView.attributedText)
-        context.coordinator.scheduleHydrateNotePhotos()
+        // Keep lastPublished tied to the Core Data archive — hydrate is display-only and must
+        // not rewrite `note.content` (that falsely triggers "changed on another device").
+        context.coordinator.lastPublishedSerialized = text
         NotePhotoCloudHydrator.hydrate(textView: textView)
+        context.coordinator.scheduleHydrateNotePhotos()
 
         context.coordinator.applyTypingAttributes(in: textView)
         NotificationCenter.default.post(name: .editorActiveStylesDidChange, object: context.coordinator,
@@ -323,15 +128,43 @@ struct MarkdownEditor: UIViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.textView = uiView
         guard !uiView.isFirstResponder else { return }
+
+        // Already applied this exact archive — don't re-deserialize (wipes hydrated photos).
+        if context.coordinator.lastPublishedSerialized == text {
+            return
+        }
+
         let latest = context.coordinator.serializeContent(from: uiView.attributedText)
-        guard latest != text else { return }
+        if latest == text {
+            context.coordinator.lastPublishedSerialized = text
+            return
+        }
+
+        // Hydrate only swaps placeholder bitmaps for on-disk/CloudKit images. That changes
+        // serialize() output, but it is NOT a content edit — never write it back into the
+        // SwiftUI/Core Data binding or we get false "changed on another device" alerts.
+        // Only skip re-applying when logical content (plain text + photo refs) matches;
+        // otherwise fall through so remote edits still render.
+        if NotePhotoAttachment.hasHydratedPhotos(in: uiView.attributedText) {
+            let incomingPlain = MarkdownSerialization.searchablePlainText(from: text)
+            let currentPlain = MarkdownSerialization.searchablePlainText(from: latest)
+            let incomingPhotos = Set(NotePhotoRefCollector.recordNames(fromSerialized: text))
+            let currentPhotos = NotePhotoRefCollector.recordNames(in: uiView.attributedText)
+            if incomingPlain == currentPlain && incomingPhotos == currentPhotos {
+                context.coordinator.lastPublishedSerialized = text
+                return
+            }
+        }
 
         DispatchQueue.main.async {
+            guard !uiView.isFirstResponder else { return }
+            if context.coordinator.lastPublishedSerialized == text { return }
             let range = uiView.selectedRange
             let attributed = context.coordinator.deserializeContent(text)
             uiView.setAttributedStringForBindingSync(attributed)
             context.coordinator.refreshKnownPhotoRecordNames(from: uiView.attributedText)
-            context.coordinator.scheduleHydrateNotePhotos()
+            context.coordinator.lastPublishedSerialized = text
+            NotePhotoCloudHydrator.hydrate(textView: uiView)
             let len = uiView.attributedText.length
             let maxR = NSMaxRange(range)
             if len == 0 {
@@ -416,15 +249,6 @@ struct MarkdownEditor: UIViewRepresentable {
             renumberListWorkItem?.cancel()
             hydrateNotePhotosWorkItem?.cancel()
             fontCache.removeAll()
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                NotificationCenter.default.post(
-                    name: .editorActiveStylesDidChange,
-                    object: self,
-                    userInfo: ["styles": Set<MarkdownAction>()]
-                )
-            }
         }
 
         func applyExternalSerializedContent(_ text: String) {
@@ -487,7 +311,7 @@ struct MarkdownEditor: UIViewRepresentable {
         // MARK: Text changes
         
         func textViewDidChange(_ textView: UITextView) {
-            guard !isProgrammaticChange else { return }
+            guard !isProgrammaticChange, !NotePhotoCloudHydrator.isHydrating(textView) else { return }
             hasPendingUserEdit = true
             saveWorkItem?.cancel()
 
@@ -622,6 +446,35 @@ struct MarkdownEditor: UIViewRepresentable {
                     Self.withUndoGroup(in: tv) { WysiwygActionHandler.apply(.indent, to: etv, coordinator: self) }
                     serializeAfterAttributeChange(in: tv)
                     return false
+                }
+            }
+            
+            if string == " ", range.length == 0, let etv = tv as? EditorTextView {
+                let lineR = etv.currentLineRange()
+                let full = tv.attributedText.string as NSString
+                if lineR.location <= full.length {
+                    let textBeforeCursor = full.substring(with: NSRange(location: lineR.location, length: range.location - lineR.location))
+                    if textBeforeCursor.range(of: "^[ \t]*[-*+]$", options: .regularExpression) != nil {
+                        let action: MarkdownAction = .bulletList
+                        Self.withUndoGroup(in: tv) {
+                            let start = tv.position(from: tv.beginningOfDocument, offset: lineR.location)!
+                            let end = tv.position(from: tv.beginningOfDocument, offset: range.location)!
+                            tv.replace(tv.textRange(from: start, to: end)!, withText: "")
+                            WysiwygActionHandler.apply(action, to: etv, coordinator: self)
+                        }
+                        serializeAfterAttributeChange(in: tv)
+                        return false
+                    } else if textBeforeCursor.range(of: "^[ \t]*\\d+\\.$", options: .regularExpression) != nil {
+                        let action: MarkdownAction = .numberedList
+                        Self.withUndoGroup(in: tv) {
+                            let start = tv.position(from: tv.beginningOfDocument, offset: lineR.location)!
+                            let end = tv.position(from: tv.beginningOfDocument, offset: range.location)!
+                            tv.replace(tv.textRange(from: start, to: end)!, withText: "")
+                            WysiwygActionHandler.apply(action, to: etv, coordinator: self)
+                        }
+                        serializeAfterAttributeChange(in: tv)
+                        return false
+                    }
                 }
             }
             
@@ -1029,11 +882,16 @@ struct MarkdownEditor: UIViewRepresentable {
 
         func scheduleHydrateNotePhotos() {
             hydrateNotePhotosWorkItem?.cancel()
+            // Apply memory/disk hits immediately so opening a note isn't blank until focus.
+            if let tv = textView {
+                NotePhotoCloudHydrator.hydrate(textView: tv)
+            }
             let item = DispatchWorkItem { [weak self] in
                 guard let self, let tv = self.textView else { return }
                 NotePhotoCloudHydrator.hydrate(textView: tv)
             }
             hydrateNotePhotosWorkItem = item
+            // Short delay only to coalesce CloudKit download completions / cache-warmed posts.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: item)
         }
 
@@ -1055,6 +913,7 @@ struct MarkdownEditor: UIViewRepresentable {
             Task {
                 for rk in toDelete {
                     NotePhotoDiskCache.remove(recordName: rk)
+                    NotePhotoSync.dequeuePending(recordName: rk)
                     try? await CloudKitAssetService.shared.deleteNotePhoto(recordName: rk)
                 }
             }
@@ -1136,20 +995,40 @@ struct MarkdownEditor: UIViewRepresentable {
         fileprivate func uploadAndInsertPhoto(_ image: UIImage) async {
             guard let tv = textView, let noteID = parent.noteCloudKitID else { return }
             guard !parent.notePhotosDisabled else { return }
-            let attachmentID = UUID()
-            let recordName: String
-            do {
-                recordName = try await CloudKitAssetService.shared.uploadNotePhoto(image, noteID: noteID, attachmentID: attachmentID)
-            } catch {
-                ErrorHandlingService.shared.reportOperationFailure(
-                    module: "Notes",
-                    detail: "Couldn't add the photo to your note: \(error.localizedDescription)"
-                )
-                return
+
+            let uploadImage: UIImage
+            if let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024),
+               let normalized = UIImage(data: data) {
+                uploadImage = normalized
+            } else {
+                uploadImage = image
             }
+
+            let attachmentID = UUID()
+            let recordName = "NotePhoto-\(attachmentID.uuidString)"
+
+            // Keep the photo on-device first so a CloudKit blip never drops it from the note.
+            NotePhotoDiskCache.save(uploadImage, recordName: recordName)
+            NotePhotoCloudHydrator.storeInMemoryCache(uploadImage, recordName: recordName)
+
             let column = NotePhotoAttachment.textColumnWidth(for: tv)
             let width = NotePhotoAttachment.preferredLayoutWidth(storedPoints: nil, columnWidth: column)
-            insertPhotoAttachment(image: image, recordName: recordName, width: width, in: tv)
+            insertPhotoAttachment(image: uploadImage, recordName: recordName, width: width, in: tv)
+
+            do {
+                _ = try await CloudKitAssetService.shared.uploadNotePhoto(
+                    uploadImage,
+                    noteID: noteID,
+                    attachmentID: attachmentID
+                )
+                NotePhotoSync.dequeuePending(recordName: recordName)
+            } catch {
+                NotePhotoSync.enqueuePending(recordName: recordName, noteID: noteID)
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Notes",
+                    detail: "Photo added on this device, but iCloud sync failed. It will retry automatically."
+                )
+            }
         }
 
         private func insertPhotoAttachment(image: UIImage, recordName: String, width: CGFloat, in tv: UITextView) {
@@ -1505,7 +1384,7 @@ final class EditorTextView: UITextView {
 
 // MARK: - Word-style multi-level list (•/◦/▪, 1., a), 1) …)
 
-private enum WordListLineKind {
+enum WordListLineKind {
     private static let indentU = 4
     static func listLevel(leading: String) -> Int { leading.count / indentU }
     static func leadingPrefix(_ line: String) -> String { String(line.prefix(while: { $0 == " " })) }
@@ -1802,7 +1681,7 @@ class WysiwygActionHandler {
     
     // MARK: - Multiline selection (Word: apply to every selected line)
     
-    private static func lineRangesCoveredBySelection(_ full: NSString, _ sel: NSRange) -> [NSRange] {
+    static func lineRangesCoveredBySelection(_ full: NSString, _ sel: NSRange) -> [NSRange] {
         guard full.length > 0 else { return [NSRange(location: 0, length: 0)] }
         if sel.length == 0 {
             let pos = min(max(0, sel.location), full.length)
@@ -1827,12 +1706,12 @@ class WysiwygActionHandler {
         return r
     }
     
-    private static func blockRangeForLineRanges(_ lrs: [NSRange]) -> NSRange? {
+    static func blockRangeForLineRanges(_ lrs: [NSRange]) -> NSRange? {
         guard let f = lrs.first, let l = lrs.last else { return nil }
         return NSRange(location: f.location, length: NSMaxRange(l) - f.location)
     }
     
-    private static func stringLinesFromBlock(_ full: NSString, _ lrs: [NSRange]) -> [String] {
+    static func stringLinesFromBlock(_ full: NSString, _ lrs: [NSRange]) -> [String] {
         lrs.map { r in
             var s = full.substring(with: r) as String
             if s.hasSuffix("\n") { s = String(s.dropLast()) }
@@ -1840,7 +1719,7 @@ class WysiwygActionHandler {
         }
     }
     
-    private static func transformListLine(_ line: String, action: MarkdownAction) -> String {
+    static func transformListLine(_ line: String, action: MarkdownAction) -> String {
         let n = line as NSString
         let r = line.startIndex..<line.endIndex
         let rNS = NSRange(r, in: line)
@@ -2081,7 +1960,7 @@ class WysiwygActionHandler {
 
     // MARK: Lists (Word-style: same control swaps list type or toggles; never stack markers)
     
-    fileprivate static func listMarkerPrefixUTF16Length(_ line: String) -> Int? {
+    static func listMarkerPrefixUTF16Length(_ line: String) -> Int? {
         let n = line as NSString
         let paren = n.range(of: "^\\s*\\d+\\) ", options: .regularExpression)
         if paren.location != NSNotFound { return paren.length }
@@ -2094,11 +1973,11 @@ class WysiwygActionHandler {
         return nil
     }
     
-    private static func leadingSpacePrefix(_ line: String) -> String {
+    static func leadingSpacePrefix(_ line: String) -> String {
         String(line.prefix(while: { $0 == " " }))
     }
     
-    fileprivate static func removeListMarkerForToggle(_ line: String, bullet: Bool) -> String {
+    static func removeListMarkerForToggle(_ line: String, bullet: Bool) -> String {
         let n = line as NSString
         if bullet {
             for p in ["^\\s*• ", "^\\s*◦ ", "^\\s*▪ "] {
@@ -2115,7 +1994,7 @@ class WysiwygActionHandler {
         }
     }
     
-    private static func addListMarkerToPlainLine(_ line: String, numbered: Bool) -> String {
+    static func addListMarkerToPlainLine(_ line: String, numbered: Bool) -> String {
         let indent = leadingSpacePrefix(line)
         let indLen = indent.count
         let rest = indLen > 0 ? String(line.dropFirst(indLen)) : line
@@ -2124,7 +2003,7 @@ class WysiwygActionHandler {
         return indent + marker + rest
     }
     
-    private static func convertNumberedLineToBulletLine(_ line: String) -> String {
+    static func convertNumberedLineToBulletLine(_ line: String) -> String {
         let indent = leadingSpacePrefix(line)
         let indLen = indent.count
         let after = indLen > 0 ? String(line.dropFirst(indLen)) : line
@@ -2136,7 +2015,7 @@ class WysiwygActionHandler {
         return line
     }
     
-    private static func convertBulletLineToNumberedLine(_ line: String) -> String {
+    static func convertBulletLineToNumberedLine(_ line: String) -> String {
         let indent = leadingSpacePrefix(line)
         let indLen = indent.count
         let rest = indLen > 0 ? String(line.dropFirst(indLen)) : line
@@ -2146,7 +2025,7 @@ class WysiwygActionHandler {
         return line
     }
     
-    private static func newCursorInLineAfterListEdit(
+    static func newCursorInLineAfterListEdit(
         oldLine: String,
         newLine: String,
         cursorInLine: Int,
@@ -2439,10 +2318,12 @@ class WysiwygActionHandler {
 
 }
 
+#endif
+
 // MARK: - SwiftUI Toolbar (Cleaner Layout)
 
 struct MarkdownToolbarView: View {
-    var coordinator: MarkdownEditor.Coordinator?
+    var coordinator: (any MarkdownEditorCoordinating)?
     @State private var alignmentMenuIcon = "text.alignleft"
     @State private var headingMenuTitle = "H"
 
@@ -2587,7 +2468,7 @@ struct MarkdownToolbarView: View {
 struct ToolbarButton: View {
     let title: String
     let action: MarkdownAction
-    var coordinator: MarkdownEditor.Coordinator?
+    var coordinator: (any MarkdownEditorCoordinating)?
     @State private var isSelected = false
     @State private var isEnabled = true
     var accessibilityLabel: String
@@ -2642,7 +2523,7 @@ struct ToolbarButton: View {
             isEnabled = true
             return
         }
-        guard let tv = coordinator?.textView, let um = tv.undoManager else {
+        guard let um = coordinator?.editorUndoManager else {
             isEnabled = false
             return
         }
@@ -2650,7 +2531,22 @@ struct ToolbarButton: View {
     }
 }
 
+#if canImport(UIKit)
 // MARK: - PHPicker (note photos)
+
+extension MarkdownEditor.Coordinator: MarkdownEditorCoordinating {
+    var editorUndoManager: UndoManager? { textView?.undoManager }
+
+    func currentSerializedContent() -> String? {
+        guard let tv = textView else { return nil }
+        return serializeContent(from: tv.attributedText)
+    }
+
+    func currentImageUrlsJSON() -> String? {
+        guard let tv = textView else { return nil }
+        return NotePhotoRefCollector.jsonIndex(for: tv.attributedText)
+    }
+}
 
 extension MarkdownEditor.Coordinator: PHPickerViewControllerDelegate, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -2667,11 +2563,52 @@ extension MarkdownEditor.Coordinator: PHPickerViewControllerDelegate, UIGestureR
             guard let r = firstResult else { return }
             if r.itemProvider.canLoadObject(ofClass: UIImage.self) {
                 r.itemProvider.loadObject(ofClass: UIImage.self) { object, _ in
-                    guard let image = object as? UIImage else { return }
+                    guard let image = object as? UIImage else {
+                        Self.loadPickerImageData(from: r.itemProvider) { image in
+                            guard let image else {
+                                ErrorHandlingService.shared.reportOperationFailure(
+                                    module: "Notes",
+                                    detail: "Couldn't read that photo. If it's in iCloud, download it on this device and try again."
+                                )
+                                return
+                            }
+                            Task { @MainActor in
+                                await coord.uploadAndInsertPhoto(image)
+                            }
+                        }
+                        return
+                    }
                     Task { @MainActor in
                         await coord.uploadAndInsertPhoto(image)
                     }
                 }
+            } else {
+                Self.loadPickerImageData(from: r.itemProvider) { image in
+                    guard let image else {
+                        ErrorHandlingService.shared.reportOperationFailure(
+                            module: "Notes",
+                            detail: "Couldn't read that photo. If it's in iCloud, download it on this device and try again."
+                        )
+                        return
+                    }
+                    Task { @MainActor in
+                        await coord.uploadAndInsertPhoto(image)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func loadPickerImageData(from provider: NSItemProvider, completion: @escaping (UIImage?) -> Void) {
+        let typeId = UTType.image.identifier
+        guard provider.hasItemConformingToTypeIdentifier(typeId) else {
+            completion(nil)
+            return
+        }
+        provider.loadDataRepresentation(forTypeIdentifier: typeId) { data, _ in
+            let image = data.flatMap { UIImage(data: $0) }
+            DispatchQueue.main.async {
+                completion(image)
             }
         }
     }
