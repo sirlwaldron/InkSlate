@@ -4,6 +4,8 @@ import Combine
 // MARK: - Daily Quote Service
 @MainActor
 class DailyQuoteService: ObservableObject {
+    static let shared = DailyQuoteService()
+
     @Published var currentQuote: DailyQuote?
     @Published var isLoading = false
     

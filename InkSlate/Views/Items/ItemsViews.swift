@@ -62,7 +62,7 @@ private struct HomeScreenBackgroundView: View {
 struct ModernHomeHeader: View {
     @State private var showingProfileCustomization = false
     @EnvironmentObject private var profileService: ProfileService
-    @StateObject private var dailyQuoteService = DailyQuoteService()
+    @ObservedObject private var dailyQuoteService = DailyQuoteService.shared
 
     var body: some View {
         VStack(spacing: DesignSystem.Spacing.lg) {

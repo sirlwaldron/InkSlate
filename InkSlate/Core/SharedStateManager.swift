@@ -12,7 +12,7 @@ class SharedStateManager: ObservableObject {
     let autoSaveManager = AutoSaveManager()
     
     
-    @Published var showSplashScreen = true
+    @Published var showSplashScreen: Bool
     @Published var isMenuOpen = false
 
     private let menuStyleKey = "NavigationMenuStyle"
@@ -32,6 +32,8 @@ class SharedStateManager: ObservableObject {
     @Published var pendingRemoteResetToken: String?
 
     private init() {
+        self.showSplashScreen = !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+
         let savedStyle = NSUbiquitousKeyValueStore.default.string(forKey: menuStyleKey)
             ?? UserDefaults.standard.string(forKey: menuStyleKey)
         if let raw = savedStyle, let style = NavigationMenuStyle(rawValue: raw) {

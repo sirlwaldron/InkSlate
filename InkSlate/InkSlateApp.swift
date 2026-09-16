@@ -56,20 +56,20 @@ struct InkSlateApp: App {
                         }
                         .onAppear {
                             PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "ContentViewOnAppear") {
-                                performCleanup()
                                 #if os(iOS)
                                 InkSlateAppDelegate.scheduleBackgroundCleanup()
                                 #else
                                 scheduleMacPeriodicCleanup()
                                 #endif
                             }
-                            Task {
-                                await checkCloudKitStatus()
+                            // Defer non-critical database maintenance to avoid competing with initial screen presentation
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                                performCleanup()
+                                checkForRemoteReset()
                             }
                             Task {
                                 await InkSlateNotificationService.shared.refreshRepeatingNotificationsFromDefaultsIfAuthorized()
                             }
-                            checkForRemoteReset()
                         }
                         .onReceive(NotificationCenter.default.publisher(for: PlatformLifecycle.didBecomeActive)) { _ in
                             #if os(iOS)
