@@ -2,6 +2,34 @@ import SwiftUI
 import Foundation
 
 // MARK: - Navigation Types
+enum NavigationMenuStyle: String, CaseIterable, Identifiable {
+    case radial = "radial"
+    case drawer = "drawer"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .radial: return "Radial Dial"
+        case .drawer: return "Side Drawer"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .radial: return "Circular dial launcher in corner"
+        case .drawer: return "Swipe from left edge to open side menu"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .radial: return "circle.grid.cross.fill"
+        case .drawer: return "sidebar.left"
+        }
+    }
+}
+
 enum MenuViewType: String, CaseIterable {
     case wantToWatch = "Want to Watch"
     case notes = "Notes"

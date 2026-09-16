@@ -95,6 +95,25 @@ struct SettingsView: View {
             }
 
             Section("Navigation") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Menu Style")
+                        .font(DesignSystem.Typography.subheadline)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    Picker("Menu Style", selection: $shared.navigationMenuStyle) {
+                        ForEach(NavigationMenuStyle.allCases) { style in
+                            Label(style.title, systemImage: style.icon)
+                                .tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(shared.navigationMenuStyle.subtitle)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                }
+                .padding(.vertical, 4)
+
                 SettingsRowButton(
                     title: "Menu Order",
                     subtitle: "Reorder or hide tabs · Pro modules marked",

@@ -15,6 +15,11 @@ struct ContentView: View {
     @State private var isShowingPaywall = false
     @State private var paywallHighlight: MenuViewType?
 
+    #if os(iOS)
+    @State private var drawerDragOffset: CGFloat = 0
+    @State private var isDraggingDrawer: Bool = false
+    #endif
+
     #if os(macOS)
     @Binding var columnVisibility: NavigationSplitViewVisibility
   #endif
@@ -97,35 +102,44 @@ struct ContentView: View {
 
     #if os(iOS)
     private var iosBody: some View {
-        ZStack {
-            // Keep the outer stack stable; remount only the feature so menu swaps stay fast
-            // and features with their own stacks drop any pushed detail.
-            NavigationStack {
-                VStack(spacing: 0) {
-                    SyncBackupWarningBanner(persistence: persistence)
-                    MainContentView(
-                        selectedView: selectedView,
-                        onRequestUpgrade: { presentPaywall(for: $0) }
+        GeometryReader { proxy in
+            let drawerWidth = min(320, proxy.size.width * 0.82)
+            let safeBottom = proxy.safeAreaInsets.bottom
+
+            ZStack(alignment: .leading) {
+                // Keep the outer stack stable; remount only the feature so menu swaps stay fast
+                // and features with their own stacks drop any pushed detail.
+                NavigationStack {
+                    VStack(spacing: 0) {
+                        SyncBackupWarningBanner(persistence: persistence)
+                        MainContentView(
+                            selectedView: selectedView,
+                            onRequestUpgrade: { presentPaywall(for: $0) }
+                        )
+                        .id(selectedView)
+                    }
+                }
+                .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
+                .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
+
+                if sharedStateManager.showSplashScreen {
+                    SplashScreenView {
+                        sharedStateManager.hideSplashScreen()
+                        presentOnboardingIfNeeded()
+                    }
+                    .transition(.opacity)
+                }
+
+                if sharedStateManager.navigationMenuStyle == .radial {
+                    FloatingRadialLauncher(
+                        isMenuOpen: $sharedStateManager.isMenuOpen,
+                        selectedView: $selectedView,
+                        onSelectMenu: { selectMenu($0) }
                     )
-                    .id(selectedView)
+                } else {
+                    drawerNavigationOverlay(drawerWidth: drawerWidth, safeBottom: safeBottom)
                 }
             }
-            .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
-            .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
-
-            if sharedStateManager.showSplashScreen {
-                SplashScreenView {
-                    sharedStateManager.hideSplashScreen()
-                    presentOnboardingIfNeeded()
-                }
-                .transition(.opacity)
-            }
-
-            FloatingRadialLauncher(
-                isMenuOpen: $sharedStateManager.isMenuOpen,
-                selectedView: $selectedView,
-                onSelectMenu: { selectMenu($0) }
-            )
         }
         .modifier(SharedContentModifiers(
             sharedStateManager: sharedStateManager,
@@ -146,6 +160,139 @@ struct ContentView: View {
             confirmRemoteReset: confirmRemoteReset,
             dismissRemoteReset: dismissRemoteReset
         ))
+    }
+
+    @ViewBuilder
+    private func drawerNavigationOverlay(drawerWidth: CGFloat, safeBottom: CGFloat) -> some View {
+        // Backdrop dimming
+        if sharedStateManager.isMenuOpen || isDraggingDrawer {
+            let opacity: Double = {
+                if sharedStateManager.isMenuOpen {
+                    let dragFraction = max(0, min(1, 1.0 + (drawerDragOffset / drawerWidth)))
+                    return 0.38 * dragFraction
+                } else {
+                    let dragFraction = max(0, min(1, drawerDragOffset / drawerWidth))
+                    return 0.38 * dragFraction
+                }
+            }()
+
+            Color.black.opacity(opacity)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                        sharedStateManager.isMenuOpen = false
+                        drawerDragOffset = 0
+                        isDraggingDrawer = false
+                    }
+                }
+                .transition(.opacity)
+        }
+
+        // Side Drawer Panel
+        let currentOffset: CGFloat = {
+            if sharedStateManager.isMenuOpen {
+                return min(0, drawerDragOffset)
+            } else {
+                return -drawerWidth + max(0, drawerDragOffset)
+            }
+        }()
+
+        SideDrawerMenuView(
+            isDrawerOpen: $sharedStateManager.isMenuOpen,
+            selectedView: $selectedView,
+            onSelectMenu: { selectMenu($0) },
+            onUpgradePro: { presentPaywall(for: $0) }
+        )
+        .frame(width: drawerWidth)
+        .offset(x: currentOffset)
+        .simultaneousGesture(
+            DragGesture()
+                .onChanged { value in
+                    if sharedStateManager.isMenuOpen {
+                        if value.translation.width < 0 {
+                            isDraggingDrawer = true
+                            drawerDragOffset = value.translation.width
+                        }
+                    }
+                }
+                .onEnded { value in
+                    isDraggingDrawer = false
+                    if sharedStateManager.isMenuOpen {
+                        if value.translation.width < -50 || value.predictedEndTranslation.width < -100 {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                sharedStateManager.isMenuOpen = false
+                                drawerDragOffset = 0
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                drawerDragOffset = 0
+                            }
+                        }
+                    }
+                }
+        )
+        .ignoresSafeArea(edges: .vertical)
+
+        // Edge swipe detector when drawer is closed
+        if !sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen {
+            Color.clear
+                .frame(width: 36)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                        .onChanged { value in
+                            if value.startLocation.x <= 36 && value.translation.width > 0 {
+                                isDraggingDrawer = true
+                                drawerDragOffset = min(drawerWidth, value.translation.width)
+                            }
+                        }
+                        .onEnded { value in
+                            isDraggingDrawer = false
+                            if value.translation.width > 50 || value.predictedEndTranslation.width > 100 {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                    sharedStateManager.isMenuOpen = true
+                                    drawerDragOffset = 0
+                                }
+                            } else {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                    sharedStateManager.isMenuOpen = false
+                                    drawerDragOffset = 0
+                                }
+                            }
+                        }
+                )
+                .ignoresSafeArea(edges: .vertical)
+        }
+
+        // Floating Drawer Toggle Button (bottom-trailing for ergonomic thumb reach)
+        if !sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen {
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                            sharedStateManager.isMenuOpen.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(DesignSystem.Colors.textPrimary)
+                            .frame(width: 52, height: 52)
+                            .background(
+                                Circle()
+                                    .fill(DesignSystem.Colors.surface)
+                                    .shadow(color: DesignSystem.Shadows.small, radius: 12, x: 0, y: 6)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open navigation drawer")
+                    .padding(.trailing, 16)
+                    .padding(.bottom, max(safeBottom, 16) + 12)
+                }
+            }
+        }
     }
     #endif
 

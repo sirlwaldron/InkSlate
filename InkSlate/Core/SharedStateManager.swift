@@ -15,6 +15,15 @@ class SharedStateManager: ObservableObject {
     @Published var showSplashScreen = true
     @Published var isMenuOpen = false
 
+    private let menuStyleKey = "NavigationMenuStyle"
+    @Published var navigationMenuStyle: NavigationMenuStyle {
+        didSet {
+            UserDefaults.standard.set(navigationMenuStyle.rawValue, forKey: menuStyleKey)
+            NSUbiquitousKeyValueStore.default.set(navigationMenuStyle.rawValue, forKey: menuStyleKey)
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
+    }
+
     @Published var pendingMenuSelection: MenuViewType?
 
     /// Note imported from the share extension that should be opened in the editor.
@@ -23,6 +32,28 @@ class SharedStateManager: ObservableObject {
     @Published var pendingRemoteResetToken: String?
 
     private init() {
+        let savedStyle = NSUbiquitousKeyValueStore.default.string(forKey: menuStyleKey)
+            ?? UserDefaults.standard.string(forKey: menuStyleKey)
+        if let raw = savedStyle, let style = NavigationMenuStyle(rawValue: raw) {
+            self.navigationMenuStyle = style
+        } else {
+            self.navigationMenuStyle = .radial
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                if let cloudStyle = NSUbiquitousKeyValueStore.default.string(forKey: self.menuStyleKey),
+                   let style = NavigationMenuStyle(rawValue: cloudStyle),
+                   self.navigationMenuStyle != style {
+                    self.navigationMenuStyle = style
+                }
+            }
+        }
     }
 
     func requestOpenMenu(_ menu: MenuViewType) {
@@ -41,6 +72,7 @@ class SharedStateManager: ObservableObject {
     
     func resetToDefaults() {
         showSplashScreen = true
+        navigationMenuStyle = .radial
         pendingMenuSelection = nil
         pendingOpenNoteID = nil
         pendingRemoteResetToken = nil
