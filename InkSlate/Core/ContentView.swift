@@ -137,7 +137,7 @@ struct ContentView: View {
                         onSelectMenu: { selectMenu($0) }
                     )
                 } else {
-                    drawerNavigationOverlay(drawerWidth: drawerWidth, safeBottom: safeBottom)
+                    drawerNavigationOverlay(drawerWidth: drawerWidth)
                 }
             }
         }
@@ -163,7 +163,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func drawerNavigationOverlay(drawerWidth: CGFloat, safeBottom: CGFloat) -> some View {
+    private func drawerNavigationOverlay(drawerWidth: CGFloat) -> some View {
         // Backdrop dimming
         if sharedStateManager.isMenuOpen || isDraggingDrawer {
             let opacity: Double = {
@@ -219,7 +219,7 @@ struct ContentView: View {
                 .onEnded { value in
                     isDraggingDrawer = false
                     if sharedStateManager.isMenuOpen {
-                        if value.translation.width < -50 || value.predictedEndTranslation.width < -100 {
+                        if value.translation.width < -45 || value.predictedEndTranslation.width < -90 {
                             withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
                                 sharedStateManager.isMenuOpen = false
                                 drawerDragOffset = 0
@@ -234,22 +234,22 @@ struct ContentView: View {
         )
         .ignoresSafeArea(edges: .vertical)
 
-        // Edge swipe detector when drawer is closed
+        // Edge swipe detector when drawer is closed (open purely by sliding from left)
         if !sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen {
             Color.clear
-                .frame(width: 36)
+                .frame(width: 44)
                 .contentShape(Rectangle())
                 .gesture(
-                    DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
                         .onChanged { value in
-                            if value.startLocation.x <= 36 && value.translation.width > 0 {
+                            if value.startLocation.x <= 48 && value.translation.width > 0 {
                                 isDraggingDrawer = true
                                 drawerDragOffset = min(drawerWidth, value.translation.width)
                             }
                         }
                         .onEnded { value in
                             isDraggingDrawer = false
-                            if value.translation.width > 50 || value.predictedEndTranslation.width > 100 {
+                            if value.translation.width > 40 || value.predictedEndTranslation.width > 80 {
                                 withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
                                     sharedStateManager.isMenuOpen = true
                                     drawerDragOffset = 0
@@ -263,35 +263,6 @@ struct ContentView: View {
                         }
                 )
                 .ignoresSafeArea(edges: .vertical)
-        }
-
-        // Floating Drawer Toggle Button (bottom-trailing for ergonomic thumb reach)
-        if !sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen {
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                            sharedStateManager.isMenuOpen.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(DesignSystem.Colors.textPrimary)
-                            .frame(width: 52, height: 52)
-                            .background(
-                                Circle()
-                                    .fill(DesignSystem.Colors.surface)
-                                    .shadow(color: DesignSystem.Shadows.small, radius: 12, x: 0, y: 6)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open navigation drawer")
-                    .padding(.trailing, 16)
-                    .padding(.bottom, max(safeBottom, 16) + 12)
-                }
-            }
         }
     }
     #endif
