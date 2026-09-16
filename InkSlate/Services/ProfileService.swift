@@ -92,8 +92,13 @@ class ProfileService: ObservableObject {
 
         loadHomeBackgroundTransform()
 
+        // Load profile image synchronously from in-memory stores (UserDefaults / iCloud KV)
+        // so it's available on first render without needing to exit and re-enter the app.
+        // The image is small (≤700KB) so this is fast.
+        loadProfileImageSync()
+
+        // Defer the larger home background load to avoid blocking the main thread.
         Task {
-            await loadProfileImage()
             await loadHomeBackgroundImage()
         }
 
@@ -171,7 +176,10 @@ class ProfileService: ObservableObject {
 
     // MARK: - Load Helpers
 
-    private func loadProfileImage() async {
+    /// Synchronously loads the profile image from in-memory stores (iCloud KV / UserDefaults).
+    /// These are fast since the data is already cached in memory by the OS.
+    /// Falls back to an async disk load if neither in-memory source has the image.
+    private func loadProfileImageSync() {
         if let cloudData = cloudStore.data(forKey: userImageKey),
            let image = platformImage(from: cloudData) {
             userImage = image
@@ -189,17 +197,19 @@ class ProfileService: ObservableObject {
             return
         }
 
-        if let storedImage = await loadImageFromDiskAsync(fileName: imageFileName) {
-            userImage = storedImage
-            if let imageData = jpegDataFittingCloudLimit(for: storedImage) {
-                cloudStore.set(imageData, forKey: userImageKey)
-                cloudStore.synchronize()
-                userDefaults.set(imageData, forKey: userImageKey)
+        // Neither in-memory store had the image; try disk asynchronously as a fallback.
+        Task {
+            if let storedImage = await loadImageFromDiskAsync(fileName: imageFileName) {
+                userImage = storedImage
+                if let imageData = jpegDataFittingCloudLimit(for: storedImage) {
+                    cloudStore.set(imageData, forKey: userImageKey)
+                    cloudStore.synchronize()
+                    userDefaults.set(imageData, forKey: userImageKey)
+                }
+            } else {
+                userImage = nil
             }
-            return
         }
-
-        userImage = nil
     }
 
     private func loadHomeBackgroundImage() async {
