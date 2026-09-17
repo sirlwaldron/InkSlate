@@ -1,6 +1,19 @@
 import SwiftUI
 import CoreData
 
+// MARK: - Full Screen Cover Navigation Item
+enum FullScreenCoverType: Identifiable, Equatable {
+    case onboarding
+    case paywall(MenuViewType?)
+
+    var id: String {
+        switch self {
+        case .onboarding: return "onboarding"
+        case .paywall(let feature): return "paywall_\(feature?.rawValue ?? "pro")"
+        }
+    }
+}
+
 // MARK: - Main Content View
 struct ContentView: View {
     @State private var selectedView: MenuViewType = .items
@@ -11,9 +24,7 @@ struct ContentView: View {
     @State private var hasAppliedInitialMainSection = false
 
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding: Bool = false
-    @State private var isShowingOnboarding = false
-    @State private var isShowingPaywall = false
-    @State private var paywallHighlight: MenuViewType?
+    @State private var activeFullScreenCover: FullScreenCoverType?
 
     #if os(iOS)
     @State private var drawerDragOffset: CGFloat = 0
@@ -62,9 +73,7 @@ struct ContentView: View {
             sharedStateManager: sharedStateManager,
             subscription: subscription,
             hasCompletedOnboarding: $hasCompletedOnboarding,
-            isShowingOnboarding: $isShowingOnboarding,
-            isShowingPaywall: $isShowingPaywall,
-            paywallHighlight: $paywallHighlight,
+            activeFullScreenCover: $activeFullScreenCover,
             viewContext: viewContext,
             onAppearSetup: onAppearSetup,
             onPendingMenuChange: { menu in
@@ -72,7 +81,11 @@ struct ContentView: View {
                 sharedStateManager.pendingMenuSelection = nil
             },
             onProChange: { isPro in
-                if isPro { isShowingPaywall = false }
+                if isPro {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        activeFullScreenCover = nil
+                    }
+                }
             },
             confirmRemoteReset: confirmRemoteReset,
             dismissRemoteReset: dismissRemoteReset
@@ -104,7 +117,6 @@ struct ContentView: View {
     private var iosBody: some View {
         GeometryReader { proxy in
             let drawerWidth = min(320, proxy.size.width * 0.82)
-            let safeBottom = proxy.safeAreaInsets.bottom
 
             ZStack(alignment: .leading) {
                 // Keep the outer stack stable; remount only the feature so menu swaps stay fast
@@ -145,9 +157,7 @@ struct ContentView: View {
             sharedStateManager: sharedStateManager,
             subscription: subscription,
             hasCompletedOnboarding: $hasCompletedOnboarding,
-            isShowingOnboarding: $isShowingOnboarding,
-            isShowingPaywall: $isShowingPaywall,
-            paywallHighlight: $paywallHighlight,
+            activeFullScreenCover: $activeFullScreenCover,
             viewContext: viewContext,
             onAppearSetup: onAppearSetup,
             onPendingMenuChange: { menu in
@@ -155,7 +165,11 @@ struct ContentView: View {
                 sharedStateManager.pendingMenuSelection = nil
             },
             onProChange: { isPro in
-                if isPro { isShowingPaywall = false }
+                if isPro {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        activeFullScreenCover = nil
+                    }
+                }
             },
             confirmRemoteReset: confirmRemoteReset,
             dismissRemoteReset: dismissRemoteReset
@@ -164,30 +178,32 @@ struct ContentView: View {
 
     @ViewBuilder
     private func drawerNavigationOverlay(drawerWidth: CGFloat) -> some View {
-        // Backdrop dimming
-        if sharedStateManager.isMenuOpen || isDraggingDrawer {
-            let opacity: Double = {
-                if sharedStateManager.isMenuOpen {
-                    let dragFraction = max(0, min(1, 1.0 + (drawerDragOffset / drawerWidth)))
-                    return 0.38 * dragFraction
-                } else {
-                    let dragFraction = max(0, min(1, drawerDragOffset / drawerWidth))
-                    return 0.38 * dragFraction
-                }
-            }()
+        // Backdrop dimming (always in view tree to maintain stable ZStack layout)
+        let isDrawerActive = sharedStateManager.isMenuOpen || isDraggingDrawer
+        let backdropOpacity: Double = {
+            if sharedStateManager.isMenuOpen {
+                let dragFraction = max(0, min(1, 1.0 + (drawerDragOffset / drawerWidth)))
+                return 0.38 * dragFraction
+            } else if isDraggingDrawer {
+                let dragFraction = max(0, min(1, drawerDragOffset / drawerWidth))
+                return 0.38 * dragFraction
+            } else {
+                return 0
+            }
+        }()
 
-            Color.black.opacity(opacity)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-                        sharedStateManager.isMenuOpen = false
-                        drawerDragOffset = 0
-                        isDraggingDrawer = false
-                    }
+        Color.black
+            .opacity(backdropOpacity)
+            .ignoresSafeArea()
+            .contentShape(Rectangle())
+            .allowsHitTesting(isDrawerActive)
+            .onTapGesture {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                    sharedStateManager.isMenuOpen = false
+                    drawerDragOffset = 0
+                    isDraggingDrawer = false
                 }
-                .transition(.opacity)
-        }
+            }
 
         // Side Drawer Panel
         let currentOffset: CGFloat = {
@@ -234,36 +250,35 @@ struct ContentView: View {
         )
         .ignoresSafeArea(edges: .vertical)
 
-        // Edge swipe detector when drawer is closed (open purely by sliding from left)
-        if !sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen {
-            Color.clear
-                .frame(width: 44)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                        .onChanged { value in
-                            if value.startLocation.x <= 48 && value.translation.width > 0 {
-                                isDraggingDrawer = true
-                                drawerDragOffset = min(drawerWidth, value.translation.width)
+        // Edge swipe detector when drawer is closed (always in view tree, hit-testing enabled when closed)
+        Color.clear
+            .frame(width: 44)
+            .contentShape(Rectangle())
+            .allowsHitTesting(!sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen)
+            .gesture(
+                DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                    .onChanged { value in
+                        if value.startLocation.x <= 48 && value.translation.width > 0 {
+                            isDraggingDrawer = true
+                            drawerDragOffset = min(drawerWidth, value.translation.width)
+                        }
+                    }
+                    .onEnded { value in
+                        isDraggingDrawer = false
+                        if value.translation.width > 40 || value.predictedEndTranslation.width > 80 {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                sharedStateManager.isMenuOpen = true
+                                drawerDragOffset = 0
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                                sharedStateManager.isMenuOpen = false
+                                drawerDragOffset = 0
                             }
                         }
-                        .onEnded { value in
-                            isDraggingDrawer = false
-                            if value.translation.width > 40 || value.predictedEndTranslation.width > 80 {
-                                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-                                    sharedStateManager.isMenuOpen = true
-                                    drawerDragOffset = 0
-                                }
-                            } else {
-                                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-                                    sharedStateManager.isMenuOpen = false
-                                    drawerDragOffset = 0
-                                }
-                            }
-                        }
-                )
-                .ignoresSafeArea(edges: .vertical)
-        }
+                    }
+            )
+            .ignoresSafeArea(edges: .vertical)
     }
     #endif
 
@@ -294,9 +309,8 @@ struct ContentView: View {
         }
     }
 
-    private func presentPaywall(for feature: MenuViewType) {
-        paywallHighlight = feature
-        isShowingPaywall = true
+    private func presentPaywall(for feature: MenuViewType? = nil) {
+        activeFullScreenCover = .paywall(feature)
     }
 
     private func confirmRemoteReset() {
@@ -323,7 +337,7 @@ struct ContentView: View {
     private func presentOnboardingIfNeeded() {
         guard !hasCompletedOnboarding else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            isShowingOnboarding = true
+            activeFullScreenCover = .onboarding
         }
     }
 }
@@ -451,9 +465,7 @@ private struct SharedContentModifiers: ViewModifier {
     @ObservedObject var sharedStateManager: SharedStateManager
     @ObservedObject var subscription: SubscriptionService
     @Binding var hasCompletedOnboarding: Bool
-    @Binding var isShowingOnboarding: Bool
-    @Binding var isShowingPaywall: Bool
-    @Binding var paywallHighlight: MenuViewType?
+    @Binding var activeFullScreenCover: FullScreenCoverType?
     var viewContext: NSManagedObjectContext
     var onAppearSetup: () -> Void
     var onPendingMenuChange: (MenuViewType) -> Void
@@ -464,17 +476,19 @@ private struct SharedContentModifiers: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear(perform: onAppearSetup)
-            .fullScreenCoverIfAvailable(isPresented: $isShowingOnboarding) {
-                OnboardingView {
-                    hasCompletedOnboarding = true
-                    isShowingOnboarding = false
+            .fullScreenCoverIfAvailable(item: $activeFullScreenCover) { cover in
+                switch cover {
+                case .onboarding:
+                    OnboardingView {
+                        hasCompletedOnboarding = true
+                        activeFullScreenCover = nil
+                    }
+                    .interactiveDismissDisabled(true)
+                case .paywall(let highlight):
+                    PaywallView(highlightFeature: highlight)
+                        .environmentObject(subscription)
+                        .environmentObject(ThemeService.shared)
                 }
-                .interactiveDismissDisabled(true)
-            }
-            .fullScreenCoverIfAvailable(isPresented: $isShowingPaywall) {
-                PaywallView(highlightFeature: paywallHighlight)
-                    .environmentObject(subscription)
-                    .environmentObject(ThemeService.shared)
             }
             .onChange(of: sharedStateManager.pendingMenuSelection) { _, newValue in
                 guard let menu = newValue else { return }
@@ -495,7 +509,9 @@ private struct SharedContentModifiers: ViewModifier {
             .withErrorHandling()
             #if os(macOS)
             .onReceive(NotificationCenter.default.publisher(for: .inkSlateOpenSettings)) { _ in
-                paywallHighlight = nil
+                if case .paywall = activeFullScreenCover {
+                    activeFullScreenCover = nil
+                }
             }
             #endif
     }

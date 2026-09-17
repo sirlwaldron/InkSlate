@@ -42,7 +42,11 @@ struct PaywallView: View {
             }
         }
         .onChange(of: subscription.isPro) { _, isPro in
-            if isPro { dismiss() }
+            if isPro {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    dismiss()
+                }
+            }
         }
         .inkSlateFormContainer()
     }

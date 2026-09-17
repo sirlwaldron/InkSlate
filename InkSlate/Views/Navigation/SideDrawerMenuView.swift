@@ -9,7 +9,7 @@ struct SideDrawerMenuView: View {
     @Binding var isDrawerOpen: Bool
     @Binding var selectedView: MenuViewType
     var onSelectMenu: (MenuViewType) -> Void
-    var onUpgradePro: ((MenuViewType) -> Void)? = nil
+    var onUpgradePro: ((MenuViewType?) -> Void)? = nil
 
     @EnvironmentObject private var subscription: SubscriptionService
     @EnvironmentObject private var themeService: ThemeService
@@ -185,11 +185,16 @@ struct SideDrawerMenuView: View {
             triggerHaptic()
             if isLocked {
                 onUpgradePro?(menu)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                        isDrawerOpen = false
+                    }
+                }
             } else {
                 onSelectMenu(menu)
-            }
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-                isDrawerOpen = false
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                    isDrawerOpen = false
+                }
             }
         } label: {
             HStack(spacing: 11) {
@@ -245,9 +250,11 @@ struct SideDrawerMenuView: View {
     private var proUpsellBanner: some View {
         Button {
             triggerHaptic()
-            onUpgradePro?(.notes)
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-                isDrawerOpen = false
+            onUpgradePro?(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+                    isDrawerOpen = false
+                }
             }
         } label: {
             HStack(spacing: 7) {
