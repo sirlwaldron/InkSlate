@@ -55,6 +55,7 @@ class NotesService: ObservableObject {
             newNote.containerType = "none"
             context.insert(newNote)
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return newNote
         }, context: "Create note")
     }
@@ -69,6 +70,7 @@ class NotesService: ObservableObject {
                 note.preview = nil
             }
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Update note") ?? false
     }
@@ -77,6 +79,7 @@ class NotesService: ObservableObject {
         return errorService.safeDelete({
             context.delete(note)
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Delete note") ?? false
     }
@@ -87,6 +90,7 @@ class NotesService: ObservableObject {
             note.deletedDate = Date()
             note.modifiedDate = Date()
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Move to trash") ?? false
     }
@@ -97,6 +101,7 @@ class NotesService: ObservableObject {
             note.deletedDate = nil
             note.modifiedDate = Date()
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Restore note") ?? false
     }
@@ -106,6 +111,7 @@ class NotesService: ObservableObject {
             note.isPinned.toggle()
             note.modifiedDate = Date()
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Toggle pin") ?? false
     }
@@ -116,6 +122,7 @@ class NotesService: ObservableObject {
                 context.delete(note)
             }
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Empty trash") ?? false
     }
@@ -132,6 +139,7 @@ class NotesService: ObservableObject {
                 }
             }
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Purge old notes") ?? false
     }
@@ -215,6 +223,7 @@ class NotesService: ObservableObject {
                 note.modifiedDate = Date()
             }
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Add tag") ?? false
     }
@@ -229,6 +238,7 @@ class NotesService: ObservableObject {
             note.tags = currentTags.joined(separator: ",")
             note.modifiedDate = Date()
             try context.save()
+            PersistenceController.shared.pingSyncToPeers()
             return true
         }, context: "Remove tag") ?? false
     }

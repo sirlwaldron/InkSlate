@@ -342,7 +342,7 @@ final class PersistenceController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + forceCloudKitSyncDebounce, execute: item)
     }
 
-    private func pingSyncToPeers() {
+    func pingSyncToPeers() {
         NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
         NSUbiquitousKeyValueStore.default.synchronize()
     }

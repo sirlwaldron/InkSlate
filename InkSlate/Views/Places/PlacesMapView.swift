@@ -30,6 +30,13 @@ struct PlacesMapView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPlace: Place?
     @State private var detailPlace: Place?
+    @State private var selectedFeature: MapFeature?
+    @State private var resolvedItem: MKMapItem?
+    @State private var isResolvingFeature = false
+    @StateObject private var locationManager = LocationManager.shared
+    
+    @AppStorage("hasSeenLocationOnboarding") private var hasSeenLocationOnboarding = false
+    @State private var showLocationOnboarding = false
 
     init() {
         let request = NSFetchRequest<Place>(entityName: "Place")
@@ -42,28 +49,68 @@ struct PlacesMapView: View {
         allPlaces.filter { $0.hasCoordinate }
     }
 
+    @MapContentBuilder
+    private var mapContent: some MapContent {
+        UserAnnotation()
+        ForEach(mappablePlaces) { place in
+            Annotation(place.name ?? "Untitled Place", coordinate: place.coordinate) {
+                PlaceMapPin(place: place, isSelected: selectedPlace?.objectID == place.objectID)
+                    .onTapGesture {
+                        lightHaptic()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            selectedPlace = place
+                        }
+                    }
+            }
+            .annotationTitles(.automatic)
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            Map(position: $cameraPosition) {
-                ForEach(mappablePlaces) { place in
-                    Annotation(place.name ?? "Untitled Place", coordinate: place.coordinate) {
-                        PlaceMapPin(place: place, isSelected: selectedPlace?.objectID == place.objectID)
-                            .onTapGesture {
-                                lightHaptic()
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    selectedPlace = place
-                                }
-                            }
-                    }
-                    .annotationTitles(.automatic)
-                }
+            Map(position: $cameraPosition, selection: $selectedFeature) {
+                mapContent
             }
-            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            .mapStyle(.standard(pointsOfInterest: .all))
             .mapControls {
                 #if os(iOS)
                 MapCompass()
                 MapScaleView()
+                MapUserLocationButton()
                 #endif
+            }
+            .onChange(of: selectedFeature) {
+                if let feature = selectedFeature {
+                    isResolvingFeature = true
+                    selectedPlace = nil
+                    Task {
+                        let req = MKMapItemRequest(feature: feature)
+                        if let item = try? await req.mapItem {
+                            await MainActor.run {
+                                resolvedItem = item
+                                isResolvingFeature = false
+                            }
+                        } else {
+                            await MainActor.run { isResolvingFeature = false }
+                        }
+                    }
+                } else {
+                    resolvedItem = nil
+                }
+            }
+            .onAppear {
+                if !hasSeenLocationOnboarding {
+                    showLocationOnboarding = true
+                } else {
+                    locationManager.requestAuthorization()
+                }
+            }
+            .inkSlateSheet(isPresented: $showLocationOnboarding) {
+                LocationOnboardingView {
+                    hasSeenLocationOnboarding = true
+                    showLocationOnboarding = false
+                    locationManager.requestAuthorization()
+                }
             }
             .onTapGesture {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -84,8 +131,63 @@ struct PlacesMapView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if mappablePlaces.isEmpty {
+            if mappablePlaces.isEmpty && resolvedItem == nil && selectedPlace == nil {
                 emptyOverlay
+            }
+
+            if let item = resolvedItem {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.name ?? "Unknown Place")
+                                .font(.headline)
+                            if let category = item.pointOfInterestCategory?.rawValue {
+                                Text(category.replacingOccurrences(of: "MKPOICategory", with: ""))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation {
+                                selectedFeature = nil
+                                resolvedItem = nil
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Button(action: {
+                        let newPlace = Place(context: viewContext)
+                        newPlace.id = UUID()
+                        newPlace.name = item.name ?? "New Place"
+                        newPlace.latitude = item.placemark.coordinate.latitude
+                        newPlace.longitude = item.placemark.coordinate.longitude
+                        if let address = item.placemark.title {
+                            newPlace.address = address
+                        }
+                        newPlace.createdDate = Date()
+                        newPlace.modifiedDate = Date()
+                        _ = viewContext.inkSlateSave(module: "PlacesMap")
+                        detailPlace = newPlace
+                        selectedFeature = nil
+                        resolvedItem = nil
+                    }) {
+                        Text("Add to Places")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(DesignSystem.Colors.accent)
+                }
+                .padding()
+                .background(DesignSystem.Colors.surface)
+                .cornerRadius(DesignSystem.CornerRadius.md)
+                .shadow(radius: 5)
+                .padding()
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .navigationTitle("Map")
@@ -590,5 +692,105 @@ enum PlaceGeocodingBackfill {
             }
 
             UserDefaults.standard.set(failCounts, forKey: failCountsKey)
+    }
+}
+import Foundation
+import CoreLocation
+import Combine
+
+class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    static let shared = LocationManager()
+    
+    private let manager = CLLocationManager()
+    
+    @Published var userLocation: CLLocationCoordinate2D?
+    @Published var isAuthorized: Bool = false
+    
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+    
+    func requestAuthorization() {
+        manager.requestWhenInUseAuthorization()
+    }
+    
+    func startUpdating() {
+        manager.startUpdatingLocation()
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let location = locations.last {
+            userLocation = location.coordinate
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        if status == .authorizedWhenInUse || status == .authorizedAlways {
+            isAuthorized = true
+            startUpdating()
+        } else {
+            isAuthorized = false
+        }
+    }
+}
+
+// MARK: - Location Onboarding View
+
+struct LocationOnboardingView: View {
+    var onContinue: () -> Void
+    
+    var body: some View {
+        VStack(spacing: DesignSystem.Spacing.xxl) {
+            Spacer(minLength: 0)
+            
+            ZStack {
+                Circle()
+                    .fill(DesignSystem.Colors.accent.opacity(0.10))
+                    .frame(width: 132, height: 132)
+                Circle()
+                    .stroke(DesignSystem.Colors.accent.opacity(0.18), lineWidth: 0.5)
+                    .frame(width: 132, height: 132)
+                Image(systemName: "location.fill")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundColor(DesignSystem.Colors.accent)
+                    .accessibilityHidden(true)
+            }
+            
+            VStack(spacing: DesignSystem.Spacing.lg) {
+                Text("Explore Nearby")
+                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .multilineTextAlignment(.center)
+                
+                Text("InkSlate uses your location to show you on the map, helping you find and save nearby restaurants, parks, and activities directly to your lists.")
+                    .font(DesignSystem.Typography.body)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, DesignSystem.Spacing.md)
+            }
+            
+            Spacer(minLength: 0)
+            
+            VStack(spacing: DesignSystem.Spacing.lg) {
+                Button {
+                    onContinue()
+                } label: {
+                    Text("Continue")
+                        .font(DesignSystem.Typography.button)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DesignSystem.Spacing.lg)
+                }
+                .minimalistButton(variant: .primary, size: .large)
+                .accessibilityLabel("Continue to allow location access")
+            }
+        }
+        .padding(DesignSystem.Spacing.xxl)
+        .background(DesignSystem.Colors.background.ignoresSafeArea())
+        #if os(macOS)
+        .frame(width: 400, height: 500)
+        #endif
     }
 }

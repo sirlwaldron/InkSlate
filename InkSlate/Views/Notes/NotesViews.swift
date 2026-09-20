@@ -2225,6 +2225,7 @@ struct TextEditorView: View {
         
         do {
             try viewContext.save()
+            PersistenceController.shared.pingSyncToPeers()
             hasUnsavedChanges = false
             coordinatorRef.value?.commitPendingPhotoDeletions()
         } catch let error as NSError {
@@ -2270,6 +2271,7 @@ struct TextEditorView: View {
                     let conflictCopy = makeConflictCopy()
                     do {
                         try viewContext.save()
+                        PersistenceController.shared.pingSyncToPeers()
                         hasUnsavedChanges = false
                         if hasOtherDirty {
                             errorMessage = "Sync conflict detected. Your text for this note was saved as \"\(conflictCopy.title ?? "Conflict Copy")\". Other unsaved changes elsewhere in the app may have been reverted—re-open those screens if something looks missing."

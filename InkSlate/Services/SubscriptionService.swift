@@ -150,7 +150,7 @@ final class SubscriptionService: ObservableObject {
         defer { isPurchasing = false }
         do {
             try await AppStore.sync()
-            await refreshEntitlements()
+            await refreshEntitlementsWithRetry()
             if !isPro {
                 purchaseErrorMessage = "No active InkSlate Pro subscription was found for this Apple ID."
             }

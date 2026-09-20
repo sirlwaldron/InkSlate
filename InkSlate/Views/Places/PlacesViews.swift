@@ -35,6 +35,10 @@ enum PlaceType: String, CaseIterable, Identifiable {
 }
 
 private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
+    if let typeString = category.type, let type = PlaceType(rawValue: typeString) {
+        return type
+    }
+    
     if let marker = category.icon?.lowercased() {
         if marker.contains("restaurant") || marker.contains("fork") || marker.contains("knife") {
             return .restaurant
@@ -45,9 +49,6 @@ private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
         if marker.contains("place") || marker.contains("map") || marker.contains("location") {
             return .place
         }
-        if PlaceType.allCases.contains(where: { $0.lowercaseKey == marker }) {
-            return PlaceType.allCases.first(where: { $0.lowercaseKey == marker }) ?? .place
-        }
     }
     
     if let name = category.name?.lowercased() {
@@ -56,9 +57,6 @@ private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
         }
         if name.contains("activity") || name.contains("park") || name.contains("gym") || name.contains("adventure") || name.contains("event") {
             return .activity
-        }
-        if name.contains("place") || name.contains("travel") || name.contains("destination") {
-            return .place
         }
     }
     
@@ -82,6 +80,7 @@ private func inferredPlaceType(for place: Place, uncategorizedAs defaultTab: Pla
     return defaultTab ?? .place
 }
 
+@MainActor
 fileprivate func getOrCreateUncategorizedPlaceCategory(for type: PlaceType, context: NSManagedObjectContext) -> PlaceCategory {
     let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
     fetch.predicate = NSPredicate(format: "sortOrder == %d AND type == %@", -1, type.rawValue)
@@ -107,10 +106,11 @@ fileprivate func getOrCreateUncategorizedPlaceCategory(for type: PlaceType, cont
     category.createdDate = Date()
     category.modifiedDate = Date()
     context.insert(category)
-    context.saveQuietly(module: "Places")
+    _ = context.inkSlateSave(module: "Places")
     return category
 }
 
+@MainActor
 fileprivate func mergeDuplicateUncategorizedCategories(
     keeper: PlaceCategory,
     duplicates: [PlaceCategory],
@@ -127,9 +127,10 @@ fileprivate func mergeDuplicateUncategorizedCategories(
         context.delete(dup)
     }
     keeper.modifiedDate = Date()
-    context.saveQuietly(module: "Places")
+    _ = context.inkSlateSave(module: "Places")
 }
 
+@MainActor
 fileprivate func deduplicateUncategorizedPlaceCategories(in context: NSManagedObjectContext) {
     for type in PlaceType.allCases {
         let fetch = NSFetchRequest<PlaceCategory>(entityName: "PlaceCategory")
@@ -1115,7 +1116,7 @@ private struct EditPlaceCategoryView: View {
         category.name = trimmedName
         category.icon = selectedIcon
         category.modifiedDate = Date()
-        viewContext.saveQuietly(module: "Places")
+        _ = viewContext.inkSlateSave(module: "Places")
         dismiss()
     }
     
@@ -1541,11 +1542,10 @@ struct QuickAddPlaceView: View {
         newPlace.modifiedDate = Date()
         newPlace.rating = 10
 
-        do {
-            try viewContext.saveWithCloudKitSync()
+        if viewContext.inkSlateSave(module: "Places") {
             dismiss()
-        } catch {
-            placesLog.error("Quick add place save failed: \(error.localizedDescription)")
+        } else {
+            placesLog.error("Quick add place save failed")
         }
     }
 }

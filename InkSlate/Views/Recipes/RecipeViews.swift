@@ -46,6 +46,7 @@ struct ModernRecipeMainView: View {
     @State private var displayedRecipes: [Recipe] = []
     @State private var recipePendingDelete: Recipe?
     @State private var filterGeneration = 0
+    
 
     private var filteredRecipes: [Recipe] { displayedRecipes }
 
@@ -182,6 +183,7 @@ struct ModernRecipeMainView: View {
             RecipeStatsView(recipes: Array(allRecipes))
         }
     }
+
 
     private var searchBar: some View {
         HStack {
@@ -1575,6 +1577,7 @@ private extension View {
 struct IngredientsSection: View {
     @Binding var ingredients: [RecipeIngredientData]
     @State private var showingAdd = false
+    @State private var showingBulkAdd = false
     @State private var editingIngredient: RecipeIngredientData?
     
     var body: some View {
@@ -1622,15 +1625,29 @@ struct IngredientsSection: View {
                     }
                 }
                 
-                Button {
-                    showingAdd = true
-                    lightHaptic()
-                } label: {
-                    Label("Add Ingredient", systemImage: "plus.circle.fill")
-                        .font(DesignSystem.Typography.body)
-                        .foregroundColor(DesignSystem.Colors.accent)
+                HStack {
+                    Button {
+                        showingAdd = true
+                        lightHaptic()
+                    } label: {
+                        Label("Add Ingredient", systemImage: "plus.circle.fill")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Spacer()
+                    
+                    Button {
+                        showingBulkAdd = true
+                        lightHaptic()
+                    } label: {
+                        Label("Paste List", systemImage: "doc.on.clipboard")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 .listRowBackground(DesignSystem.Colors.surface)
             } header: {
                 Text("Ingredients")
@@ -1647,6 +1664,13 @@ struct IngredientsSection: View {
                 }
                 showingAdd = false
             }
+        }
+        .inkSlateSheet(isPresented: $showingBulkAdd) {
+            BulkImportView(type: .ingredients, onSaveIngredients: { parsed in
+                withAnimation(.spring()) {
+                    ingredients.append(contentsOf: parsed)
+                }
+            }, onSaveSteps: nil)
         }
         .inkSlateSheet(item: $editingIngredient) { ingredient in
             IngredientEditorView(existing: ingredient) { updated in
@@ -1735,6 +1759,7 @@ struct IngredientEditorView: View {
 struct StepsSection: View {
     @Binding var steps: [RecipeStep]
     @State private var showingAdd = false
+    @State private var showingBulkAdd = false
     @State private var editingStep: RecipeStep?
     
     var body: some View {
@@ -1790,15 +1815,29 @@ struct StepsSection: View {
                     }
                 }
                 
-                Button {
-                    showingAdd = true
-                    lightHaptic()
-                } label: {
-                    Label("Add Step", systemImage: "plus.circle.fill")
-                        .font(DesignSystem.Typography.body)
-                        .foregroundColor(DesignSystem.Colors.accent)
+                HStack {
+                    Button {
+                        showingAdd = true
+                        lightHaptic()
+                    } label: {
+                        Label("Add Step", systemImage: "plus.circle.fill")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Spacer()
+                    
+                    Button {
+                        showingBulkAdd = true
+                        lightHaptic()
+                    } label: {
+                        Label("Paste List", systemImage: "doc.on.clipboard")
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 .listRowBackground(DesignSystem.Colors.surface)
             } header: {
                 Text("Instructions")
@@ -1815,6 +1854,13 @@ struct StepsSection: View {
                 }
                 showingAdd = false
             }
+        }
+        .inkSlateSheet(isPresented: $showingBulkAdd) {
+            BulkImportView(type: .steps, onSaveIngredients: nil, onSaveSteps: { parsed in
+                withAnimation(.spring()) {
+                    steps.append(contentsOf: parsed)
+                }
+            })
         }
         .inkSlateSheet(item: $editingStep) { step in
             StepEditorView(existing: step) { updated in
@@ -3574,6 +3620,8 @@ private struct ShoppingListRow: View {
                     .foregroundColor(item.isChecked ? DesignSystem.Colors.success : DesignSystem.Colors.textTertiary)
                     .scaleEffect(item.isChecked ? 1.05 : 1.0)
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: item.isChecked)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -4306,9 +4354,50 @@ struct PantryItemEditorView: View {
     }
 }
 
+// MARK: - Bulk Import
 
+enum BulkImportType {
+    case ingredients
+    case steps
+}
 
-
-
-
-
+struct BulkImportView: View {
+    @Environment(\.dismiss) private var dismiss
+    let type: BulkImportType
+    let onSaveIngredients: (([RecipeIngredientData]) -> Void)?
+    let onSaveSteps: (([RecipeStep]) -> Void)?
+    
+    @State private var text: String = ""
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 200)
+                } footer: {
+                    Text(type == .ingredients ? "Paste your ingredient list here. Each line will become a separate ingredient. We will try to automatically parse amounts and units!" : "Paste your steps here. Each line or paragraph will become a separate step.")
+                }
+            }
+            .navigationTitle(type == .ingredients ? "Paste Ingredients" : "Paste Steps")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add") {
+                        if type == .ingredients {
+                            let parsed = RecipeParser.parseIngredients(from: text)
+                            onSaveIngredients?(parsed)
+                        } else {
+                            let parsed = RecipeParser.parseSteps(from: text)
+                            onSaveSteps?(parsed)
+                        }
+                        dismiss()
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}

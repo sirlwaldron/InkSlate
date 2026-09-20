@@ -218,10 +218,14 @@ final class ShareViewController: UIViewController {
                         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !trimmed.isEmpty { return trimmed }
                     }
-                    if let url = item as? URL,
-                       let string = try? String(contentsOf: url, encoding: .utf8) {
-                        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmed.isEmpty { return trimmed }
+                    if let url = item as? URL {
+                        let didAccess = url.startAccessingSecurityScopedResource()
+                        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                        
+                        if let string = try? String(contentsOf: url, encoding: .utf8) {
+                            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty { return trimmed }
+                        }
                     }
                 } catch {
                     continue

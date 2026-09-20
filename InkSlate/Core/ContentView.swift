@@ -82,8 +82,8 @@ struct ContentView: View {
             },
             onProChange: { isPro in
                 if isPro {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        activeFullScreenCover = nil
+                    if case .paywall(let feature) = activeFullScreenCover, let f = feature {
+                        applyMenuSelection(f)
                     }
                 }
             },
@@ -166,8 +166,8 @@ struct ContentView: View {
             },
             onProChange: { isPro in
                 if isPro {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        activeFullScreenCover = nil
+                    if case .paywall(let feature) = activeFullScreenCover, let f = feature {
+                        applyMenuSelection(f)
                     }
                 }
             },

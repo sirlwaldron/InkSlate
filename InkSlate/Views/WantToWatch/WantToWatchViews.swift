@@ -44,6 +44,7 @@ struct WantToWatchMainView: View {
     @State private var selectedFilter: WatchFilter? = nil
     @State private var selectedCategory: String? = nil
     @State private var showingStats = false
+    @State private var selectedSearchItem: TMDBItem?
 
     enum WatchFilter: String, CaseIterable {
         case upNext = "Up Next"
@@ -175,6 +176,11 @@ struct WantToWatchMainView: View {
                 }
                 .inkSlateSheet(isPresented: $showingStats) {
                     WatchStatsView(items: allItems)
+                }
+                .inkSlateSheet(item: $selectedSearchItem) { item in
+                    TMDBItemDetailView(item: item, onAdd: {
+                        addToWantToWatch(item)
+                    })
                 }
                 .keyboardDismissToolbar()
             }
@@ -349,9 +355,11 @@ struct WantToWatchMainView: View {
 
             LazyVGrid(columns: WatchShelfLayout.gridColumns, spacing: WatchShelfLayout.gridSpacing) {
                 ForEach(searchResults, id: \.id) { item in
-                    SearchPosterCard(item: item) {
+                    SearchPosterCard(item: item, onAdd: {
                         addToWantToWatch(item)
-                    }
+                    }, onTitleTap: {
+                        selectedSearchItem = item
+                    })
                 }
             }
             .padding(.horizontal, DesignSystem.Spacing.lg)
@@ -759,6 +767,7 @@ struct WatchPosterCard: View {
 struct SearchPosterCard: View {
     let item: TMDBItem
     let onAdd: () -> Void
+    var onTitleTap: (() -> Void)? = nil
     @State private var isAdded = false
 
     var body: some View {
@@ -785,6 +794,10 @@ struct SearchPosterCard: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(DesignSystem.Colors.border, lineWidth: 0.5)
                 )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    onTitleTap?()
+                }
 
                 Button {
                     guard !isAdded else { return }
@@ -808,13 +821,19 @@ struct SearchPosterCard: View {
                 .accessibilityLabel(isAdded ? "Added" : "Add to list")
             }
 
-            Text(item.displayTitle)
-                .font(DesignSystem.Typography.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(DesignSystem.Colors.textPrimary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(minHeight: 28, alignment: .top)
+            Button {
+                onTitleTap?()
+            } label: {
+                Text(item.displayTitle)
+                    .font(DesignSystem.Typography.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: 28, alignment: .top)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             HStack(spacing: 4) {
                 if item.rating > 0 {
@@ -1439,4 +1458,305 @@ struct CastMemberCard: View {
 #Preview {
     WantToWatchMainView()
         .environment(\.managedObjectContext, PersistenceController.shared.container.viewContext)
+}
+// MARK: - Item Detail View
+struct TMDBItemDetailView: View {
+    let item: TMDBItem
+    let onAdd: () -> Void
+    @State private var isAdded = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var fullDetails: TMDBFullDetails?
+    @State private var isLoadingDetails = false
+    @State private var loadError: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: DesignSystem.Spacing.xl) {
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        AsyncImage(url: item.posterURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            default:
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(DesignSystem.Colors.backgroundSecondary)
+                                    .overlay(
+                                        Image(systemName: item.isMovie ? "film" : "tv")
+                                            .font(.system(size: 32, weight: .light))
+                                            .foregroundColor(DesignSystem.Colors.textTertiary)
+                                    )
+                            }
+                        }
+                        .frame(width: 180, height: 270)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: DesignSystem.Shadows.medium, radius: 8, x: 0, y: 4)
+
+                        VStack(spacing: DesignSystem.Spacing.md) {
+                            Text(item.displayTitle)
+                                .font(DesignSystem.Typography.largeTitle)
+                                .fontWeight(.bold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                .multilineTextAlignment(.center)
+
+                            if let tagline = fullDetails?.tagline, !tagline.isEmpty {
+                                Text("\"\(tagline)\"")
+                                    .font(DesignSystem.Typography.callout)
+                                    .italic()
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+
+                            HStack(spacing: DesignSystem.Spacing.md) {
+                                if item.rating > 0 {
+                                    Label(String(format: "%.1f", item.rating), systemImage: "star.fill")
+                                        .font(DesignSystem.Typography.callout)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(DesignSystem.Colors.warning)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.warning.opacity(0.1))
+                                        .cornerRadius(8)
+                                }
+
+                                if let runtime = fullDetails?.runtime, runtime > 0 {
+                                    Label(formatRuntime(runtime), systemImage: "clock")
+                                        .font(DesignSystem.Typography.callout)
+                                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.backgroundSecondary)
+                                        .cornerRadius(8)
+                                }
+
+                                if let displayDate = item.displayDate {
+                                    Text(String(displayDate.prefix(4)))
+                                        .font(DesignSystem.Typography.callout)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.backgroundSecondary)
+                                        .cornerRadius(8)
+                                }
+                            }
+
+                            if !item.isMovie,
+                               let seasons = fullDetails?.numberOfSeasons,
+                               let episodes = fullDetails?.numberOfEpisodes {
+                                HStack(spacing: DesignSystem.Spacing.md) {
+                                    Label("\(seasons) Season\(seasons == 1 ? "" : "s")", systemImage: "tv")
+                                    Label("\(episodes) Episodes", systemImage: "play.rectangle.on.rectangle")
+                                }
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+
+                            if let genres = fullDetails?.genres, !genres.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(genres.prefix(4)) { genre in
+                                            Text(genre.name)
+                                                .font(DesignSystem.Typography.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(DesignSystem.Colors.info)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 5)
+                                                .background(DesignSystem.Colors.info.opacity(0.1))
+                                                .cornerRadius(8)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(DesignSystem.Spacing.lg)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(DesignSystem.Colors.surface)
+                    )
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    // Add to list action
+                    Button(action: {
+                        guard !isAdded else { return }
+                        onAdd()
+                        withAnimation(.spring()) { isAdded = true }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: isAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                            Text(isAdded ? "Added to Watchlist" : "Add to Watchlist")
+                                .font(DesignSystem.Typography.headline)
+                                .fontWeight(.semibold)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(isAdded ? DesignSystem.Colors.success : DesignSystem.Colors.info)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .disabled(isAdded)
+
+
+                    if let cast = fullDetails?.cast, !cast.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text("Cast")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                .padding(.horizontal, DesignSystem.Spacing.lg)
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: DesignSystem.Spacing.md) {
+                                    ForEach(cast) { actor in
+                                        CastMemberCard(actor: actor)
+                                    }
+                                }
+                                .padding(.horizontal, DesignSystem.Spacing.lg)
+                            }
+                        }
+                    }
+
+                    if let directors = fullDetails?.directors, !directors.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text(item.isMovie ? "Director" : "Created By")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(directors) { person in
+                                    HStack(spacing: 12) {
+                                        AsyncImage(url: person.profileURL) { image in
+                                            image.resizable().aspectRatio(contentMode: .fill)
+                                        } placeholder: {
+                                            Circle()
+                                                .fill(DesignSystem.Colors.backgroundSecondary)
+                                                .overlay(
+                                                    Image(systemName: "person.fill")
+                                                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                                                )
+                                        }
+                                        .frame(width: 40, height: 40)
+                                        .clipShape(Circle())
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(person.name)
+                                                .font(DesignSystem.Typography.body)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                            Text(person.job)
+                                                .font(DesignSystem.Typography.caption)
+                                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(DesignSystem.Colors.surface)
+                        )
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+
+                    if let overview = item.overview, !overview.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text("Overview")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+
+                            Text(overview)
+                                .font(DesignSystem.Typography.body)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                                .lineSpacing(4)
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(DesignSystem.Colors.surface)
+                        )
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+
+                    if isLoadingDetails {
+                        ProgressView("Loading details…")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .padding()
+                    }
+
+                    if let loadError, !isLoadingDetails {
+                        Text(loadError)
+                            .font(DesignSystem.Typography.callout)
+                            .foregroundColor(DesignSystem.Colors.error)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+
+                    Spacer(minLength: DesignSystem.Spacing.xl)
+                }
+            }
+            .background(DesignSystem.Colors.background)
+            .navigationTitle("Details")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(DesignSystem.Colors.info)
+                }
+            }
+            .task {
+                await loadFullDetails()
+            }
+        }
+    }
+
+    private func formatYear(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy"
+        return formatter.string(from: date)
+    }
+
+    private func formatRuntime(_ minutes: Int) -> String {
+        let hours = minutes / 60
+        let mins = minutes % 60
+        if hours > 0 {
+            return "\(hours)h \(mins)m"
+        }
+        return "\(mins)m"
+    }
+
+    private func loadFullDetails() async {
+        guard fullDetails == nil else { return }
+        isLoadingDetails = true
+
+        do {
+            let details = try await TMDBService.shared.fetchFullDetails(
+                id: item.id,
+                isMovie: item.isMovie
+            )
+            await MainActor.run {
+                fullDetails = details
+                isLoadingDetails = false
+            }
+        } catch {
+            await MainActor.run {
+                loadError = error.localizedDescription
+                isLoadingDetails = false
+            }
+        }
+    }
+
 }

@@ -67,6 +67,7 @@ enum SharedImportManager {
             let plain = MarkdownSerialization.plainText(from: trimmed)
             newNote.preview = String(plain.prefix(100))
             try? context.save()
+            PersistenceController.shared.pingSyncToPeers()
         }
     }
 
@@ -215,6 +216,7 @@ enum SharedImportManager {
                     }
                     try context.save()
                 }
+                PersistenceController.shared.pingSyncToPeers()
                 didSave = true
             } catch {
                 didSave = false

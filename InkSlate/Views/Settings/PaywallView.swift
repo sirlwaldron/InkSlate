@@ -30,8 +30,9 @@ struct PaywallView: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Not Now") { dismiss() }
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    Button(subscription.isPro ? "Done" : "Not Now") { dismiss() }
+                        .foregroundStyle(subscription.isPro ? DesignSystem.Colors.success : DesignSystem.Colors.textSecondary)
+                        .fontWeight(subscription.isPro ? .semibold : .regular)
                 }
             }
         }
@@ -43,7 +44,7 @@ struct PaywallView: View {
         }
         .onChange(of: subscription.isPro) { _, isPro in
             if isPro {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     dismiss()
                 }
             }
@@ -206,11 +207,6 @@ struct PaywallView: View {
                 Label("You have InkSlate Pro", systemImage: "checkmark.seal.fill")
                     .font(DesignSystem.Typography.callout)
                     .foregroundStyle(DesignSystem.Colors.success)
-                    .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                            dismiss()
-                        }
-                    }
             }
         }
     }
@@ -361,9 +357,7 @@ struct PaywallView: View {
             return
         }
         await subscription.purchase(product)
-        if subscription.isPro {
-            dismiss()
-        }
+        // Dismissal is handled by the .onChange observer with a delay
     }
 }
 
