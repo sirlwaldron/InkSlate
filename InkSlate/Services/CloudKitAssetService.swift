@@ -501,6 +501,8 @@ final class CloudKitAssetService {
                 operation = CKQueryOperation(query: query)
                 operation.zoneID = notePhotosZoneID
             }
+            // Only record IDs are needed; without this CloudKit downloads every photo asset just to delete it.
+            operation.desiredKeys = []
             operation.resultsLimit = 200
             let nextCursor: CKQueryOperation.Cursor? = try await withCheckedThrowingContinuation { continuation in
                 operation.recordMatchedBlock = { _, result in
