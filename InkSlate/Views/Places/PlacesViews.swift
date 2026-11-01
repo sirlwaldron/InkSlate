@@ -1578,7 +1578,8 @@ struct QuickAddPlaceView: View {
         newPlace.category = selectedCategory ?? getOrCreateUncategorizedPlaceCategory(for: type, context: viewContext)
         newPlace.createdDate = Date()
         newPlace.modifiedDate = Date()
-        newPlace.rating = 10
+        // Unrated (0). It used to be 10, so every quick-added visited place showed as a perfect 10/10.
+        newPlace.rating = 0
 
         if viewContext.inkSlateSave(module: "Places") {
             dismiss()
@@ -1897,7 +1898,7 @@ struct PlaceCard: View {
                 }
                 
                     HStack(spacing: DesignSystem.Spacing.md) {
-                    if place.isVisited {
+                    if place.isVisited, place.rating > 0 {
                             HStack(spacing: DesignSystem.Spacing.xs) {
                                 ForEach(0..<5) { index in
                                     Image(systemName: index < Int(place.rating / 2) ? "star.fill" : "star")
@@ -2458,7 +2459,8 @@ struct PlaceEditorView: View {
         notes = place.notes ?? ""
         hasVisited = place.isVisited
         isFavorite = place.isFavorite
-        rating = Double(place.rating)
+        // 0 = never rated (e.g. quick add): start the slider at the editor default instead of 0.
+        rating = place.rating > 0 ? Double(place.rating) : 5
         dateVisited = place.visitedDate ?? Date()
         location = place.city ?? ""
         priceRange = place.priceRange ?? ""

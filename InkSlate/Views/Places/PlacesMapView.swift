@@ -417,7 +417,7 @@ struct PlaceMapCallout: View {
 
                 HStack(spacing: DesignSystem.Spacing.xs) {
                     if place.isVisited {
-                        Label("\(place.rating)/10", systemImage: "checkmark.circle.fill")
+                        Label(place.rating > 0 ? "\(place.rating)/10" : "Visited", systemImage: "checkmark.circle.fill")
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(DesignSystem.Colors.success)
                     } else {
