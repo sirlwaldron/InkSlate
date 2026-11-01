@@ -347,12 +347,19 @@ struct MarkdownEditorMac: NSViewRepresentable {
         }
 
         func applyTypingAttributes(in tv: NSTextView) {
+            // Keep the size of the text at the caret (e.g. a heading). Rebuilding from the body font made
+            // bold/italic toggled inside a heading type at body size.
+            let caretSize = (tv.typingAttributes[.font] as? NSFont)?.pointSize ?? EditorTheme.baseFont.pointSize
             var attrs: [NSAttributedString.Key: Any] = [
-                .font: EditorTheme.baseFont,
+                .font: EditorTheme.font(size: caretSize, weight: .regular),
                 .foregroundColor: EditorTheme.textColor
             ]
+            // Preserve the paragraph style (alignment) of the caret's paragraph as well.
+            if let style = tv.typingAttributes[.paragraphStyle] {
+                attrs[.paragraphStyle] = style
+            }
             if typingModes.contains(.bold) {
-                attrs[.font] = EditorTheme.font(size: EditorTheme.baseFont.pointSize, weight: .bold)
+                attrs[.font] = EditorTheme.font(size: caretSize, weight: .bold)
             }
             if typingModes.contains(.italic), let f = attrs[.font] as? NSFont {
                 let d = f.fontDescriptor.withSymbolicTraits([.italic])
