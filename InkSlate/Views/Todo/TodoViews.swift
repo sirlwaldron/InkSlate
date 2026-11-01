@@ -363,10 +363,11 @@ struct TodoMainView: View {
         var didChange = false
         for tasks in groups.values where tasks.count > 1 {
             let sorted = tasks.sorted { ($0.createdDate ?? .distantPast) < ($1.createdDate ?? .distantPast) }
-            // Prefer keeping a completed instance (it will reset in place) when present;
-            // otherwise keep the oldest incomplete task.
-            let keeper = sorted.first(where: \.isCompleted) ?? sorted.first
-            guard let keeper else { continue }
+            // The old duplicate-on-complete behaviour left a COMPLETED original plus incomplete clones.
+            // Only treat a group as legacy duplicates when it has that shape. Two incomplete recurring
+            // tasks with the same title/rule are something the user may have created on purpose, and this
+            // runs on every appear, so it must not silently delete them.
+            guard let keeper = sorted.first(where: \.isCompleted) else { continue }
 
             for task in sorted where task.objectID != keeper.objectID {
                 viewContext.delete(task)
@@ -1219,9 +1220,14 @@ struct AddTodoTaskView: View {
         
         if viewContext.inkSlateSave(module: "To-Do", retry: { addTask() }) {
             dismiss()
-        } else if errorMessage.isEmpty {
+        } else {
+            // For a NEW task the retry action calls addTask() again, which inserts a fresh task; drop this
+            // unsaved one so a successful retry doesn't also save this copy (edits keep their object).
+            if taskToEdit == nil, !task.isDeleted { viewContext.delete(task) }
+            if errorMessage.isEmpty {
             errorMessage = "Failed to save task."
             showingError = true
+            }
         }
     }
 }
@@ -1336,9 +1342,13 @@ struct AddTodoTabView: View {
         viewContext.insert(newTab)
         if viewContext.inkSlateSave(module: "To-Do", retry: { createTab() }) {
             dismiss()
-        } else if errorMessage.isEmpty {
-            errorMessage = "Failed to create list."
-            showingError = true
+        } else {
+            // Retry re-runs createTab(); discard this unsaved list so it isn't saved twice.
+            if !newTab.isDeleted { viewContext.delete(newTab) }
+            if errorMessage.isEmpty {
+                errorMessage = "Failed to create list."
+                showingError = true
+            }
         }
     }
     
