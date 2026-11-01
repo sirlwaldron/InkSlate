@@ -110,6 +110,12 @@ struct MarkdownEditorMac: NSViewRepresentable {
         }
     }
 
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        if coordinator.hasUnpublishedTyping {
+            coordinator.flushPendingEditsToParent()
+        }
+    }
+
     func makeCoordinator() -> Coordinator {
         let coord = Coordinator(self)
         coordinatorRef = coord
@@ -122,6 +128,10 @@ struct MarkdownEditorMac: NSViewRepresentable {
         private var isProgrammaticChange = false
         var lastPublishedSerialized: String?
         private var hasPendingUserEdit = false
+        /// Typing is serialized/published after a short pause (like iOS) instead of on every keystroke.
+        private(set) var hasUnpublishedTyping = false
+        private var saveWorkItem: DispatchWorkItem?
+        private var serializeToken = 0
         private(set) var lastKnownPhotoRecordNames: Set<String> = []
         private var pendingPhotoDeletions: Set<String> = []
         fileprivate var typingModes = Set<MarkdownAction>()
@@ -162,16 +172,27 @@ struct MarkdownEditorMac: NSViewRepresentable {
 
         func flushPendingEditsToParent() {
             guard let tv = textView else { return }
+            cancelPendingPublish()
             let serialized = serializeContent(from: tv.attributedString())
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = tv.selectedRange()
+            trackRemovedPhotos(in: tv.attributedString())
+        }
+
+        /// Drops any queued/in-flight debounced publish (a newer, synchronous publish supersedes it).
+        private func cancelPendingPublish() {
+            saveWorkItem?.cancel()
+            saveWorkItem = nil
+            serializeToken &+= 1
+            hasUnpublishedTyping = false
         }
 
         func applyExternalSerializedContent(_ text: String) {
             guard let tv = textView else { return }
             isProgrammaticChange = true
             defer { isProgrammaticChange = false }
+            cancelPendingPublish()
             let attributed = deserializeContent(text)
             tv.textStorage?.setAttributedString(attributed)
             refreshKnownPhotoRecordNames(from: tv.attributedString())
@@ -223,11 +244,32 @@ struct MarkdownEditorMac: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard !isProgrammaticChange, let tv = textView, !NotePhotoCloudHydrator.isHydrating(tv) else { return }
             hasPendingUserEdit = true
-            let serialized = serializeContent(from: tv.attributedString())
-            lastPublishedSerialized = serialized
-            parent.text = serialized
             parent.selectedRange = tv.selectedRange()
-            trackRemovedPhotos(in: tv.attributedString())
+
+            if tv.undoManager?.isUndoing == true || tv.undoManager?.isRedoing == true {
+                flushPendingEditsToParent()
+            } else {
+                hasUnpublishedTyping = true
+                saveWorkItem?.cancel()
+                let item = DispatchWorkItem { [weak self] in
+                    guard let self = self, let tv = self.textView else { return }
+                    self.trackRemovedPhotos(in: tv.attributedString())
+                    let snapshot = NSAttributedString(attributedString: tv.attributedString())
+                    self.serializeToken &+= 1
+                    let token = self.serializeToken
+                    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                        let serialized = MarkdownSerialization.serialize(snapshot)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self, token == self.serializeToken else { return }
+                            self.hasUnpublishedTyping = false
+                            self.lastPublishedSerialized = serialized
+                            self.parent.text = serialized
+                        }
+                    }
+                }
+                saveWorkItem = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+            }
             postStyleChange(in: tv)
         }
 
@@ -298,6 +340,7 @@ struct MarkdownEditorMac: NSViewRepresentable {
         }
 
         private func syncFromTextView(_ tv: NSTextView) {
+            cancelPendingPublish()
             let serialized = serializeContent(from: tv.attributedString())
             // Keep lastPublishedSerialized in sync (else this looks like a remote change) and note a
             // pending user edit only if the content really changed.
