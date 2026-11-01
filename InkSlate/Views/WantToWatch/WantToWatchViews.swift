@@ -173,6 +173,10 @@ struct WantToWatchMainView: View {
                     if selectedCategory == "cartoon" {
                         selectedCategory = "tv"
                     }
+                    deduplicateItems()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .cloudKitDataRefreshed)) { _ in
+                    deduplicateItems()
                 }
                 .inkSlateSheet(isPresented: $showingStats) {
                     WatchStatsView(items: allItems)
@@ -483,6 +487,43 @@ struct WantToWatchMainView: View {
             // Don't leave an unsaved copy behind: the duplicate check above would see it and silently
             // swallow the next attempt, and it would be saved along with some unrelated later change.
             viewContext.delete(newItem)
+        }
+    }
+
+    /// Two devices adding the same title before syncing leaves duplicates. Keep one per (tmdbId, isMovie).
+    /// The keeper is chosen deterministically (oldest created, then id) so that every device keeps the
+    /// same item and none of them deletes "the other" copy; watched state is merged into the keeper.
+    private func deduplicateItems() {
+        var groups: [String: [WantToWatchItem]] = [:]
+        for item in allItems where item.tmdbId != 0 && !item.isDeleted && item.managedObjectContext != nil {
+            groups["\(item.tmdbId)-\(item.isMovie)", default: []].append(item)
+        }
+
+        var changed = false
+        for items in groups.values where items.count > 1 {
+            let sorted = items.sorted {
+                let a = $0.createdDate ?? .distantFuture
+                let b = $1.createdDate ?? .distantFuture
+                if a != b { return a < b }
+                return ($0.id?.uuidString ?? "") < ($1.id?.uuidString ?? "")
+            }
+            guard let keeper = sorted.first else { continue }
+            let duplicates = sorted.dropFirst()
+            if !keeper.isWatched, let watched = duplicates.filter({ $0.isWatched }).min(by: {
+                ($0.watchedDate ?? .distantFuture) < ($1.watchedDate ?? .distantFuture)
+            }) {
+                keeper.isWatched = true
+                keeper.watchedDate = watched.watchedDate ?? Date()
+                keeper.modifiedDate = Date()
+            }
+            for duplicate in duplicates {
+                viewContext.delete(duplicate)
+            }
+            changed = true
+        }
+
+        if changed {
+            _ = viewContext.inkSlateSave(module: "WantToWatch")
         }
     }
 
