@@ -75,12 +75,17 @@ final class ShareViewController: UIViewController {
         }
 
         if body == nil {
-            if let saved = await saveFirstImage(from: providers, containerURL: containerURL) {
-                await presentSharePreview(containerURL: containerURL, title: title, items: [saved], richBody: nil)
-                return
+            // Import every shared photo/file (one attachment per provider), not just the first one.
+            var saved: [AttachmentItem] = []
+            for provider in providers {
+                if let image = await saveFirstImage(from: [provider], containerURL: containerURL) {
+                    saved.append(image)
+                } else if let file = await saveFirstFile(from: [provider], containerURL: containerURL) {
+                    saved.append(file)
+                }
             }
-            if let saved = await saveFirstFile(from: providers, containerURL: containerURL) {
-                await presentSharePreview(containerURL: containerURL, title: title, items: [saved], richBody: nil)
+            if !saved.isEmpty {
+                await presentSharePreview(containerURL: containerURL, title: title, items: saved, richBody: nil)
                 return
             }
             finish()
@@ -440,8 +445,9 @@ final class ShareViewController: UIViewController {
             let data = try JSONEncoder().encode(payload)
             try data.write(to: payloadURL, options: [.atomic])
         } catch {
-            print("Failed to save pending import: \(error)")
-            finish()
+            // Don't close silently as if the note was saved: tell the user, and clean up the copied files.
+            removeSavedAttachments(of: finalItems, containerURL: containerURL)
+            presentWriteFailure(error)
             return
         }
 
@@ -490,6 +496,18 @@ final class ShareViewController: UIViewController {
             }
             responder = current.next
         }
+    }
+
+    private func presentWriteFailure(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn't save to InkSlate",
+            message: "The shared content wasn't saved (\(error.localizedDescription)). Please try again.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.finish()
+        })
+        present(alert, animated: true)
     }
 
     private func finish() {
