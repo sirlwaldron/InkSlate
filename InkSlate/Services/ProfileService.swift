@@ -25,8 +25,14 @@ class ProfileService: ObservableObject {
     /// device wins over a stale copy on another instead of being "restored" from the local cache.
     private let userImageModifiedKey = "profileUserImageModified"
     private let homeBackgroundScaleKey = "homeBackgroundScale"
-    private let homeBackgroundOffsetXKey = "homeBackgroundOffsetX"
-    private let homeBackgroundOffsetYKey = "homeBackgroundOffsetY"
+    /// Offsets are stored as FRACTIONS of the displayed frame (new keys). The old keys held absolute
+    /// points from the editor's frame, which looked different on every screen size.
+    private let homeBackgroundOffsetXKey = "homeBackgroundRelativeOffsetX"
+    private let homeBackgroundOffsetYKey = "homeBackgroundRelativeOffsetY"
+    private let legacyHomeBackgroundOffsetXKey = "homeBackgroundOffsetX"
+    private let legacyHomeBackgroundOffsetYKey = "homeBackgroundOffsetY"
+    /// Rough editor frame the legacy point offsets were measured in (used once to convert them).
+    private let legacyOffsetReferenceSize = CGSize(width: 360, height: 520)
     private let imageFileName = "profile-user-image.jpg"
     private let homeBackgroundFileName = "home-background.jpg"
     /// Keep profile JPEG well under NSUbiquitousKeyValueStore per-key limits.
@@ -268,11 +274,18 @@ class ProfileService: ObservableObject {
         let scale = cloudStore.object(forKey: homeBackgroundScaleKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundScaleKey) as? Double
             ?? 1.0
+        func legacy(_ key: String, reference: CGFloat) -> Double? {
+            guard let points = cloudStore.object(forKey: key) as? Double ?? userDefaults.object(forKey: key) as? Double
+            else { return nil }
+            return max(-1, min(1, points / Double(reference)))
+        }
         let offsetX = cloudStore.object(forKey: homeBackgroundOffsetXKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundOffsetXKey) as? Double
+            ?? legacy(legacyHomeBackgroundOffsetXKey, reference: legacyOffsetReferenceSize.width)
             ?? 0
         let offsetY = cloudStore.object(forKey: homeBackgroundOffsetYKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundOffsetYKey) as? Double
+            ?? legacy(legacyHomeBackgroundOffsetYKey, reference: legacyOffsetReferenceSize.height)
             ?? 0
 
         homeBackgroundScale = max(1.0, min(scale, 4.0))

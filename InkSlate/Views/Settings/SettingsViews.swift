@@ -434,6 +434,8 @@ enum InkSlateUserDefaultsKeys {
         "recipeTimer.activeSnapshots",
         "homeBackgroundScale",
         "homeBackgroundOffsetX",
+        "homeBackgroundRelativeOffsetX",
+        "homeBackgroundRelativeOffsetY",
         "homeBackgroundOffsetY",
         
         "lastQuoteDate",
