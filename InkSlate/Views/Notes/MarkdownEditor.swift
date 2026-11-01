@@ -180,6 +180,11 @@ struct MarkdownEditor: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: EditorTextView, coordinator: Coordinator) {
+        // The coordinator's debounce is cancelled on deinit; don't lose the last keystrokes if the
+        // editor is torn down before they were published.
+        if coordinator.hasUnpublishedTyping {
+            coordinator.flushPendingEditsToParent()
+        }
         uiView.undoManager?.removeAllActions()
     }
 
@@ -217,6 +222,9 @@ struct MarkdownEditor: UIViewRepresentable {
         }
 
         private var saveWorkItem: DispatchWorkItem?
+        /// True while typed text has not yet been published to `parent.text` (debounce/background
+        /// serialization in flight). Used to flush on teardown so the last keystrokes aren't lost.
+        private(set) var hasUnpublishedTyping = false
         /// Monotonic token guarding background serialization
         private var serializeToken = 0
         private var styleCalculationWorkItem: DispatchWorkItem?
@@ -280,9 +288,27 @@ struct MarkdownEditor: UIViewRepresentable {
             serializeToken &+= 1
             let serialized = serializeContent(from: textView.attributedText)
 
+            hasUnpublishedTyping = false
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = textView.selectedRange
+        }
+
+        /// Publishes the live text view into the binding after a toolbar action, undo or redo.
+        /// Cancels the typing debounce and bumps the serialize token so a stale in-flight background
+        /// serialization can't overwrite this newer state, keeps `lastPublishedSerialized` in sync
+        /// (otherwise the editor looks like a remote change), and records a pending user edit only
+        /// if the content actually changed.
+        fileprivate func publishAfterToolbarChange(from tv: UITextView) {
+            saveWorkItem?.cancel()
+            serializeToken &+= 1
+            let serialized = serializeContent(from: tv.attributedText)
+            let changed = serialized != parent.text
+            hasUnpublishedTyping = false
+            lastPublishedSerialized = serialized
+            parent.text = serialized
+            parent.selectedRange = tv.selectedRange
+            if changed { hasPendingUserEdit = true }
         }
         
         // MARK: Serialization
@@ -319,9 +345,11 @@ struct MarkdownEditor: UIViewRepresentable {
                 self.syncRemovedNotePhotosFromCloud(currentAttributed: textView.attributedText)
                 self.serializeToken &+= 1
                 let serialized = self.serializeContent(from: textView.attributedText)
+                self.hasUnpublishedTyping = false
                 self.lastPublishedSerialized = serialized
                 self.parent.text = serialized
             } else {
+                hasUnpublishedTyping = true
 // Debounced typing path: snapshot the attributed string on the main thread (cheap,
                 let item = DispatchWorkItem { [weak self] in
                     guard let self = self, let textView = self.textView else { return }
@@ -333,6 +361,7 @@ struct MarkdownEditor: UIViewRepresentable {
                         let serialized = MarkdownSerialization.serialize(snapshot)
                         DispatchQueue.main.async { [weak self] in
                             guard let self = self, token == self.serializeToken else { return }
+                            self.hasUnpublishedTyping = false
                             self.lastPublishedSerialized = serialized
                             self.parent.text = serialized
                         }
@@ -651,8 +680,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 let attrs = len == 0 ? tv.typingAttributes : tv.attributedText.attributes(at: idx, effectiveRange: nil)
                 setTypingModesFromAttributes(attrs, in: tv)
                 DispatchQueue.main.async {
-                    self.parent.text = self.serializeContent(from: tv.attributedText)
-                    self.parent.selectedRange = tv.selectedRange
+                    self.publishAfterToolbarChange(from: tv)
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: self,
                                                     userInfo: ["styles": self.currentActiveStyles(in: tv)])
@@ -671,8 +699,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 let attrs = len == 0 ? tv.typingAttributes : tv.attributedText.attributes(at: idx, effectiveRange: nil)
                 setTypingModesFromAttributes(attrs, in: tv)
                 DispatchQueue.main.async {
-                    self.parent.text = self.serializeContent(from: tv.attributedText)
-                    self.parent.selectedRange = tv.selectedRange
+                    self.publishAfterToolbarChange(from: tv)
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: self,
                                                     userInfo: ["styles": self.currentActiveStyles(in: tv)])
@@ -690,8 +717,7 @@ struct MarkdownEditor: UIViewRepresentable {
             defer { isProgrammaticChange = false }
             Self.withUndoGroup(in: tv) { WysiwygActionHandler.apply(action, to: tv, coordinator: self) }
 
-            parent.text = serializeContent(from: tv.attributedText)
-            parent.selectedRange = tv.selectedRange
+            publishAfterToolbarChange(from: tv)
             NotificationCenter.default.post(name: .editorActiveStylesDidChange, object: self,
                                             userInfo: ["styles": currentActiveStyles(in: tv)])
             
@@ -860,6 +886,7 @@ struct MarkdownEditor: UIViewRepresentable {
             serializeToken &+= 1
             let serialized = serializeContent(from: tv.attributedText)
             hasPendingUserEdit = true
+            hasUnpublishedTyping = false
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = tv.selectedRange

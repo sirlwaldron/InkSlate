@@ -280,7 +280,12 @@ struct MarkdownEditorMac: NSViewRepresentable {
         }
 
         private func syncFromTextView(_ tv: NSTextView) {
-            parent.text = serializeContent(from: tv.attributedString())
+            let serialized = serializeContent(from: tv.attributedString())
+            // Keep lastPublishedSerialized in sync (else this looks like a remote change) and note a
+            // pending user edit only if the content really changed.
+            if serialized != parent.text { hasPendingUserEdit = true }
+            lastPublishedSerialized = serialized
+            parent.text = serialized
             parent.selectedRange = tv.selectedRange()
             postStyleChange(in: tv)
         }
