@@ -366,7 +366,7 @@ struct MindMapDetailView: View {
             }
         }
         .onAppear {
-            if let firstRootNode = (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first {
+            if let firstRootNode = mindMap.primaryRootNode {
                 currentNode = firstRootNode
             } else {
                 let newRootNode = MindMapNode(context: viewContext)
@@ -455,7 +455,7 @@ struct MindMapDetailView: View {
     private func navigateToNodeAtIndex(_ index: Int) {
         if index == -1 {
             navigationStack.removeAll()
-            currentNode = (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first
+            currentNode = mindMap.primaryRootNode
             selectedNodeForAction = nil
         } else if index < navigationStack.count {
             let targetNode = navigationStack[index]
@@ -491,7 +491,7 @@ struct MindMapDetailView: View {
     
     private var breadcrumbView: some View {
         Group {
-            if showingBreadcrumbs && (!navigationStack.isEmpty || currentNode?.id != (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first?.id) {
+            if showingBreadcrumbs && (!navigationStack.isEmpty || currentNode?.id != mindMap.primaryRootNode?.id) {
                 if let current = currentNode {
                     BreadcrumbNavigationView(
                         mindMap: mindMap,
@@ -534,7 +534,7 @@ struct MindMapDetailView: View {
     private var treeMindMapContentView: some View {
         ZStack {
             backgroundView
-            if let root = (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first {
+            if let root = mindMap.primaryRootNode {
                 TreeMindMapView(
                     rootNode: root,
                     selectedNode: $selectedNodeForAction,
@@ -1124,6 +1124,12 @@ struct EditNodeView: View {
 
                 ToolbarItem(placement: .primaryAction) {
                     Button("Save") {
+                        // The node may have been deleted on another device while this sheet was open.
+                        guard node.managedObjectContext != nil, !node.isDeleted else {
+                            onDismiss()
+                            dismiss()
+                            return
+                        }
                         node.title = title.isEmpty ? "Untitled" : title
                         node.notes = notes
                         node.modifiedDate = Date()
@@ -1214,7 +1220,7 @@ struct BreadcrumbNavigationView: View {
             HStack(spacing: 8) {
                 BreadcrumbItemView(
                     title: mindMap.title ?? "Untitled",
-                    isActive: currentNode.id == (mindMap.rootNodes?.allObjects.first as? MindMapNode)?.id,
+                    isActive: currentNode.id == mindMap.primaryRootNode?.id,
                     isLast: false
                 ) {
                     onNavigateToNode(-1)
@@ -1237,7 +1243,7 @@ struct BreadcrumbNavigationView: View {
                     }
                 }
                 
-                if let firstRootNode = (mindMap.rootNodes?.allObjects.first as? MindMapNode), currentNode.id != firstRootNode.id {
+                if let firstRootNode = mindMap.primaryRootNode, currentNode.id != firstRootNode.id {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.right")
                             .font(.caption)
