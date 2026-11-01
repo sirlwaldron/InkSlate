@@ -437,6 +437,10 @@ enum InkSlateUserDefaultsKeys {
         "hasCompletedOnboarding",
 
         "budget.didEnsureDefaultSubcategories",
+        "budget.seededDefaultSubcategoryCategoryIDs",
+
+        "InkSlate.PendingNotePhotoUploads",
+        "InkSlate.PendingNoteAssetCleanups",
 
         "migration.schemaFixups.version",
 
