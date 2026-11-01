@@ -2571,6 +2571,9 @@ struct NewNoteView: View {
             .onAppear {
                 project = selectedProject
             }
+            // A swipe-down skipped Cancel, so the draft's already-uploaded photos were orphaned (and the
+            // typed text silently lost). Once there is anything to lose, Save or Cancel must be chosen.
+            .interactiveDismissDisabled(!didSaveDraft && (!title.isEmpty || !content.isEmpty))
         }
     }
 
