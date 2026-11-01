@@ -1,7 +1,19 @@
 import SwiftUI
 
 final class MarkdownEditorCoordinatingRef: ObservableObject {
-    weak var value: (any MarkdownEditorCoordinating)?
+    weak var value: (any MarkdownEditorCoordinating)? {
+        didSet {
+            let previous = oldValue as AnyObject?
+            let current = value as AnyObject?
+            guard previous !== current else { return }
+            // makeCoordinator assigns this during the first layout pass. Publish
+            // on the next turn so the formatting bar can bind without waiting
+            // for the user to type.
+            DispatchQueue.main.async { [weak self] in
+                self?.objectWillChange.send()
+            }
+        }
+    }
 }
 
 struct MarkdownEditorView: View {

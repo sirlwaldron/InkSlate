@@ -24,19 +24,29 @@ extension Place {
 
 struct PlacesMapView: View {
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
 
     @FetchRequest private var allPlaces: FetchedResults<Place>
+    @FetchRequest(
+        entity: PlaceCategory.entity(),
+        sortDescriptors: [NSSortDescriptor(keyPath: \PlaceCategory.name, ascending: true)]
+    ) private var allCategories: FetchedResults<PlaceCategory>
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPlace: Place?
     @State private var detailPlace: Place?
+    @State private var editingPlace: Place?
+    #if os(iOS)
     @State private var selectedFeature: MapFeature?
+    #endif
     @State private var resolvedItem: MKMapItem?
     @State private var isResolvingFeature = false
     @StateObject private var locationManager = LocationManager.shared
     
     @AppStorage("hasSeenLocationOnboarding") private var hasSeenLocationOnboarding = false
     @State private var showLocationOnboarding = false
+
+    @State private var visibleRegion: MKCoordinateRegion?
 
     init() {
         let request = NSFetchRequest<Place>(entityName: "Place")
@@ -66,38 +76,54 @@ struct PlacesMapView: View {
         }
     }
 
+    @ViewBuilder
+    private var mapView: some View {
+        #if os(iOS)
+        Map(position: $cameraPosition, selection: $selectedFeature) {
+            mapContent
+        }
+        #else
+        Map(position: $cameraPosition) {
+            mapContent
+        }
+        #endif
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            Map(position: $cameraPosition, selection: $selectedFeature) {
-                mapContent
-            }
-            .mapStyle(.standard(pointsOfInterest: .all))
-            .mapControls {
-                #if os(iOS)
-                MapCompass()
-                MapScaleView()
-                MapUserLocationButton()
-                #endif
-            }
-            .onChange(of: selectedFeature) {
-                if let feature = selectedFeature {
-                    isResolvingFeature = true
-                    selectedPlace = nil
-                    Task {
-                        let req = MKMapItemRequest(feature: feature)
-                        if let item = try? await req.mapItem {
-                            await MainActor.run {
-                                resolvedItem = item
-                                isResolvingFeature = false
-                            }
-                        } else {
-                            await MainActor.run { isResolvingFeature = false }
-                        }
-                    }
-                } else {
-                    resolvedItem = nil
+            mapView
+                .mapStyle(.standard(pointsOfInterest: .all))
+                .mapControls {
+                    MapCompass()
+                    MapScaleView()
+                    #if os(iOS)
+                    MapUserLocationButton()
+                    #endif
                 }
-            }
+                .onMapCameraChange { context in
+                    visibleRegion = context.region
+                }
+                #if os(iOS)
+                .onChange(of: selectedFeature) {
+                    if let feature = selectedFeature {
+                        isResolvingFeature = true
+                        selectedPlace = nil
+                        Task {
+                            let req = MKMapItemRequest(feature: feature)
+                            if let item = try? await req.mapItem {
+                                await MainActor.run {
+                                    resolvedItem = item
+                                    isResolvingFeature = false
+                                }
+                            } else {
+                                await MainActor.run { isResolvingFeature = false }
+                            }
+                        }
+                    } else {
+                        resolvedItem = nil
+                    }
+                }
+                #endif
             .onAppear {
                 if !hasSeenLocationOnboarding {
                     showLocationOnboarding = true
@@ -150,7 +176,9 @@ struct PlacesMapView: View {
                         Spacer()
                         Button {
                             withAnimation {
+                                #if os(iOS)
                                 selectedFeature = nil
+                                #endif
                                 resolvedItem = nil
                             }
                         } label: {
@@ -158,22 +186,17 @@ struct PlacesMapView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    Button(action: {
-                        let newPlace = Place(context: viewContext)
-                        newPlace.id = UUID()
-                        newPlace.name = item.name ?? "New Place"
-                        newPlace.latitude = item.placemark.coordinate.latitude
-                        newPlace.longitude = item.placemark.coordinate.longitude
-                        if let address = item.placemark.title {
-                            newPlace.address = address
+                    Menu {
+                        ForEach(allCategories) { category in
+                            Button(category.name ?? "Unnamed") {
+                                saveAndEditPlace(item: item, category: category)
+                            }
                         }
-                        newPlace.createdDate = Date()
-                        newPlace.modifiedDate = Date()
-                        _ = viewContext.inkSlateSave(module: "PlacesMap")
-                        detailPlace = newPlace
-                        selectedFeature = nil
-                        resolvedItem = nil
-                    }) {
+                        Divider()
+                        Button("No Category") {
+                            saveAndEditPlace(item: item, category: nil)
+                        }
+                    } label: {
                         Text("Add to Places")
                             .fontWeight(.semibold)
                             .frame(maxWidth: .infinity)
@@ -192,8 +215,89 @@ struct PlacesMapView: View {
         }
         .navigationTitle("Map")
         .inlineNavigationTitle()
+        .navigationBarBackButtonHidden(true)
+        .overlay(alignment: .topLeading) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(DesignSystem.Colors.surface)
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            }
+            .padding(.leading, DesignSystem.Spacing.md)
+            .padding(.top, DesignSystem.Spacing.md)
+        }
+        .overlay(alignment: .trailing) {
+            VStack(spacing: 12) {
+                Button { zoom(by: 0.5) } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
+                }
+                Button { zoom(by: 2.0) } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
+                }
+            }
+            .padding(.trailing, DesignSystem.Spacing.md)
+        }
         .inkSlateSheet(item: $detailPlace) { place in
             PlaceDetailView(place: place)
+        }
+        .inkSlateSheet(item: $editingPlace) { place in
+            PlaceEditorView(category: place.category, place: place, type: inferredPlaceType(for: place))
+        }
+    }
+    
+    private func zoom(by factor: Double) {
+        guard let region = visibleRegion else { return }
+        let newRegion = MKCoordinateRegion(
+            center: region.center,
+            span: MKCoordinateSpan(
+                latitudeDelta: min(region.span.latitudeDelta * factor, 180.0),
+                longitudeDelta: min(region.span.longitudeDelta * factor, 360.0)
+            )
+        )
+        withAnimation {
+            cameraPosition = .region(newRegion)
+        }
+    }
+
+    private func saveAndEditPlace(item: MKMapItem, category: PlaceCategory?) {
+        let newPlace = Place(context: viewContext)
+        newPlace.id = UUID()
+        newPlace.name = item.name ?? "New Place"
+        newPlace.latitude = item.placemark.coordinate.latitude
+        newPlace.longitude = item.placemark.coordinate.longitude
+        if let address = item.placemark.title {
+            newPlace.address = address
+        }
+        newPlace.category = category
+        newPlace.createdDate = Date()
+        newPlace.modifiedDate = Date()
+        _ = viewContext.inkSlateSave(module: "PlacesMap")
+        
+        #if os(iOS)
+        selectedFeature = nil
+        #endif
+        resolvedItem = nil
+        
+        // Use a short delay so the resolvedItem card dismiss animation finishes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            editingPlace = newPlace
         }
     }
 
@@ -713,7 +817,11 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func requestAuthorization() {
+        #if os(macOS)
+        manager.requestAlwaysAuthorization()
+        #else
         manager.requestWhenInUseAuthorization()
+        #endif
     }
     
     func startUpdating() {
@@ -727,12 +835,21 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        #if os(macOS)
+        if status == .authorized || status == .authorizedAlways {
+            isAuthorized = true
+            startUpdating()
+        } else {
+            isAuthorized = false
+        }
+        #else
         if status == .authorizedWhenInUse || status == .authorizedAlways {
             isAuthorized = true
             startUpdating()
         } else {
             isAuthorized = false
         }
+        #endif
     }
 }
 

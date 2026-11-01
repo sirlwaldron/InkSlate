@@ -37,16 +37,17 @@ struct PaywallView: View {
             }
         }
         .interactiveDismissDisabled(subscription.isPurchasing)
+        .onChange(of: subscription.isPro) { _, isPro in
+            if isPro {
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    dismiss()
+                }
+            }
+        }
         .task {
             if subscription.products.isEmpty {
                 await subscription.loadProducts()
-            }
-        }
-        .onChange(of: subscription.isPro) { _, isPro in
-            if isPro {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                    dismiss()
-                }
             }
         }
         .inkSlateFormContainer()

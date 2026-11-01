@@ -105,12 +105,15 @@ struct TodoMainView: View {
     @FetchRequest(sortDescriptors: [NSSortDescriptor(keyPath: \TodoTab.createdDate, ascending: true)]) private var tabs: FetchedResults<TodoTab>
     
     @State private var selectedTab: TodoTab?
-    @State private var showingAddTask = false
+    @State private var isAddingInline = false
+    @State private var forceSubmitInline = 0
+    @State private var lastAddTaskTap: Date = .distantPast
     @State private var showingAddTab = false
     @State private var showingEditTab = false
     @State private var editingTab: TodoTab?
     @State private var tabPendingDelete: TodoTab?
     @State private var showingDeleteTabConfirmation = false
+    @State private var editingTask: TodoTask?
     
     var body: some View {
         NavigationStack {
@@ -139,7 +142,11 @@ struct TodoMainView: View {
                     } else if let selectedTab {
                         TodoTaskListView(
                             selectedTab: selectedTab,
-                            onAddTask: { showingAddTask = true }
+                            isAddingInline: $isAddingInline,
+                            forceSubmitInline: $forceSubmitInline,
+                            onEditTask: { task in
+                                editingTask = task
+                            }
                         )
                         .id(selectedTab.objectID)
                     }
@@ -147,25 +154,24 @@ struct TodoMainView: View {
             }
             .navigationTitle(selectedTab?.name ?? "To-Do")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 12) {
-                        Button {
-                            showingAddTab = true
-                            lightHaptic()
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        .tint(selectedTab?.colorValue ?? DesignSystem.Colors.accent)
-                        
-                        Button {
-                            showingAddTask = true
-                            lightHaptic()
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                        }
-                        .tint(selectedTab?.colorValue ?? DesignSystem.Colors.accent)
-                        .disabled(tabs.isEmpty)
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        showingAddTab = true
+                        lightHaptic()
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
                     }
+                    .tint(selectedTab?.colorValue ?? DesignSystem.Colors.accent)
+                    .accessibilityLabel("New List")
+
+                    Button {
+                        handleAddTaskTap()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                    .tint(selectedTab?.colorValue ?? DesignSystem.Colors.accent)
+                    .disabled(tabs.isEmpty)
+                    .accessibilityLabel("New Task")
                 }
             }
             .onAppear {
@@ -205,8 +211,8 @@ struct TodoMainView: View {
             } message: {
                 deleteTabConfirmationMessage
             }
-            .inkSlateSheet(isPresented: $showingAddTask) {
-                AddTodoTaskView(selectedTab: selectedTab, availableTabs: Array(tabs))
+            .inkSlateSheet(item: $editingTask) { task in
+                AddTodoTaskView(selectedTab: selectedTab, availableTabs: Array(tabs), taskToEdit: task)
                     .inkSlateSheetDetents([.fraction(0.5), .large])
                     #if os(iOS)
                     .presentationDragIndicator(.visible)
@@ -229,6 +235,22 @@ struct TodoMainView: View {
                 }
             }
         }
+    }
+
+    /// One click on the toolbar plus can be delivered twice when several
+    /// buttons share a single toolbar item. Ignore that second delivery so
+    /// it does not open a second composer or save a second task.
+    private func handleAddTaskTap() {
+        let now = Date()
+        guard now.timeIntervalSince(lastAddTaskTap) > 0.35 else { return }
+        lastAddTaskTap = now
+
+        if isAddingInline {
+            forceSubmitInline += 1
+        } else {
+            isAddingInline = true
+        }
+        lightHaptic()
     }
 
     private var deleteTabConfirmationMessage: Text {
@@ -379,17 +401,76 @@ struct TodoMainView: View {
 
 // MARK: - Task List (predicate-scoped fetch)
 
+struct InlineAddTaskRow: View {
+    @Binding var title: String
+    @Binding var isAddingInline: Bool
+    var onReturnSubmit: () -> Void
+    var onFocusLostSubmit: () -> Void
+
+    @FocusState private var isFocused: Bool
+    @State private var justSubmitted = false
+    @State private var appearedAt = Date()
+
+    var body: some View {
+        HStack(alignment: .center, spacing: DesignSystem.Spacing.md) {
+            Image(systemName: "circle")
+                .font(.system(size: 22))
+                .foregroundColor(DesignSystem.Colors.textTertiary)
+                .frame(width: 24, height: 24)
+            
+            TextField("", text: $title, prompt: Text("New Task"))
+                .focused($isFocused)
+                .font(DesignSystem.Typography.body)
+                .submitLabel(.done)
+                .onSubmit {
+                    justSubmitted = true
+                    onReturnSubmit()
+                    DispatchQueue.main.async {
+                        isFocused = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            justSubmitted = false
+                        }
+                    }
+                }
+        }
+        .padding(DesignSystem.Spacing.md)
+        .minimalistCard(.outlined)
+        .onAppear {
+            appearedAt = Date()
+            // Wait until the row is in the hierarchy before focusing, so the
+            // initial focus change does not look like the user left the field.
+            DispatchQueue.main.async {
+                isFocused = true
+            }
+        }
+        .onChange(of: isFocused) { _, focused in
+            guard !focused, isAddingInline, !justSubmitted else { return }
+            // Insertion steals and restores focus. Treat that as still editing.
+            guard Date().timeIntervalSince(appearedAt) > 0.4 else {
+                DispatchQueue.main.async { isFocused = true }
+                return
+            }
+            onFocusLostSubmit()
+        }
+    }
+}
+
 private struct TodoTaskListView: View {
     @Environment(\.managedObjectContext) private var viewContext
 
     private let selectedTab: TodoTab
-    private let onAddTask: () -> Void
+    @Binding var isAddingInline: Bool
+    @Binding var forceSubmitInline: Int
+    let onEditTask: (TodoTask) -> Void
 
     @FetchRequest private var tasks: FetchedResults<TodoTask>
+    @State private var inlineTitle = ""
 
-    init(selectedTab: TodoTab, onAddTask: @escaping () -> Void) {
+    init(selectedTab: TodoTab, isAddingInline: Binding<Bool>, forceSubmitInline: Binding<Int>, onEditTask: @escaping (TodoTask) -> Void) {
         self.selectedTab = selectedTab
-        self.onAddTask = onAddTask
+        self._isAddingInline = isAddingInline
+        self._forceSubmitInline = forceSubmitInline
+        self.onEditTask = onEditTask
 
         let request: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
         request.predicate = NSPredicate(format: "tab == %@", selectedTab)
@@ -403,28 +484,122 @@ private struct TodoTaskListView: View {
     }
 
     var body: some View {
-        List {
-            if tasks.isEmpty {
-                EmptyTaskStateView(selectedTab: selectedTab, onCreate: onAddTask)
-                    .frame(maxWidth: .infinity)
-                    .listRowInsets(EdgeInsets(top: 40, leading: DesignSystem.Spacing.lg, bottom: 8, trailing: DesignSystem.Spacing.lg))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else {
-                ForEach(tasks) { task in
-                    TodoTaskRow(task: task)
-                        .id(task.objectID)
-                        .listRowInsets(EdgeInsets(top: 4, leading: DesignSystem.Spacing.lg, bottom: 4, trailing: DesignSystem.Spacing.lg))
-                        .listRowSeparator(.hidden)
+        VStack(spacing: 0) {
+            // Kept outside the List. A conditional row inside List is inserted
+            // twice for a single plus tap on macOS.
+            if isAddingInline {
+                InlineAddTaskRow(
+                    title: $inlineTitle,
+                    isAddingInline: $isAddingInline,
+                    onReturnSubmit: { submitInlineTask(keepEditing: true) },
+                    onFocusLostSubmit: { submitInlineTask(keepEditing: false) }
+                )
+                .id("inline-add-task")
+                .padding(.horizontal, DesignSystem.Spacing.lg)
+                .padding(.top, DesignSystem.Spacing.md)
+                .padding(.bottom, 4)
+            }
+
+            List {
+                if tasks.isEmpty && !isAddingInline {
+                    EmptyTaskStateView(selectedTab: selectedTab, onCreate: { isAddingInline = true })
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 40, leading: DesignSystem.Spacing.lg, bottom: 8, trailing: DesignSystem.Spacing.lg))
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } else {
+                    ForEach(tasks) { task in
+                        TodoTaskRow(task: task)
+                            .id(task.objectID)
+                            .listRowInsets(EdgeInsets(top: 4, leading: DesignSystem.Spacing.lg, bottom: 4, trailing: DesignSystem.Spacing.lg))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                onEditTask(task)
+                            }
+                    }
                 }
             }
+            .listStyle(.plain)
+            #if os(iOS)
+            .scrollDismissesKeyboard(.interactively)
+            #endif
+            .scrollContentBackground(.hidden)
+            .background(DesignSystem.Colors.background)
+            .refreshable {
+                PersistenceController.shared.refreshFromCloud()
+            }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(DesignSystem.Colors.background)
-        .refreshable {
-            PersistenceController.shared.refreshFromCloud()
+        #if os(macOS)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #endif
+        .toolbar {
+            #if os(iOS)
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+                .fontWeight(.bold)
+            }
+            #endif
+        }
+        .onChange(of: forceSubmitInline) { _, _ in
+            if isAddingInline {
+                submitInlineTask(keepEditing: false)
+            }
+        }
+        .onDisappear {
+            if !inlineTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                submitInlineTask(keepEditing: false)
+            }
+        }
+    }
+    
+    private enum InlineSubmitLock {
+        static var signature: String?
+        static var time: Date = .distantPast
+    }
+
+    private func submitInlineTask(keepEditing: Bool = false) {
+        let trimmed = inlineTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            // Dismiss the inline editor if submitted while empty
+            isAddingInline = false
+            return
+        }
+
+        let now = Date()
+        let signature = "\(selectedTab.objectID.uriRepresentation().absoluteString)|\(trimmed)"
+
+        // Plus, return, and focus-loss can all fire for one gesture, sometimes
+        // from a second copy of this view. Share the lock across those copies.
+        if signature == InlineSubmitLock.signature && now.timeIntervalSince(InlineSubmitLock.time) < 0.6 {
+            if !keepEditing { isAddingInline = false }
+            return
+        }
+
+        InlineSubmitLock.signature = signature
+        InlineSubmitLock.time = now
+        
+        let newTask = TodoTask(context: viewContext)
+        newTask.title = trimmed
+        newTask.tab = selectedTab
+        newTask.id = UUID()
+        newTask.createdDate = now
+        newTask.modifiedDate = now
+        newTask.isCompleted = false
+        
+        let success = viewContext.inkSlateSave(module: "To-Do")
+        if success {
+            inlineTitle = ""
+            if !keepEditing {
+                isAddingInline = false
+            }
+        } else {
+            // Clean up the entity if save failed so it isn't saved later as a duplicate
+            viewContext.delete(newTask)
         }
     }
 }
@@ -595,12 +770,15 @@ struct TodoTaskRow: View {
                 lightHaptic()
             } label: {
                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
+                    .font(.system(size: 22))
                     .foregroundColor(task.isCompleted ? DesignSystem.Colors.success : DesignSystem.Colors.textTertiary)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 24, height: 24)
+                    .padding(10) // 24 + 20 = 44x44 touch target
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .padding(.leading, -10)
+            .padding(.top, -6) // Offset the top padding to keep the circle aligned with the text
             
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
                 Text(task.title ?? "Untitled")
@@ -705,7 +883,7 @@ struct TodoTaskRow: View {
 }
 
 
-// MARK: - Add Task View
+// MARK: - Add/Edit Task View
 
 struct AddTodoTaskView: View {
     @Environment(\.dismiss) private var dismiss
@@ -713,6 +891,8 @@ struct AddTodoTaskView: View {
     
     let selectedTab: TodoTab?
     let availableTabs: [TodoTab]
+    let taskToEdit: TodoTask?
+    
     @State private var title = ""
     @State private var notes = ""
     @State private var selectedTabID: NSManagedObjectID?
@@ -890,7 +1070,7 @@ struct AddTodoTaskView: View {
                     Button {
                         addTask()
                     } label: {
-                        Text("Add Task")
+                        Text(taskToEdit != nil ? "Save Changes" : "Add Task")
                             .font(DesignSystem.Typography.headline)
                             .foregroundColor(DesignSystem.Colors.textInverse)
                             .frame(maxWidth: .infinity)
@@ -903,9 +1083,19 @@ struct AddTodoTaskView: View {
                 }
                 .padding(DesignSystem.Spacing.lg)
             }
-            .navigationTitle("Add Task")
+            .navigationTitle(taskToEdit != nil ? "Edit Task" : "Add Task")
             .inlineNavigationTitle()
             .toolbar {
+                #if os(iOS)
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.bold)
+                }
+                #endif
+                
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
@@ -921,7 +1111,33 @@ struct AddTodoTaskView: View {
             .inkSlateFormContainer()
         }
         .onAppear {
-            selectedTabID = selectedTab?.objectID ?? availableTabs.first?.objectID
+            if let taskToEdit = taskToEdit {
+                title = taskToEdit.title ?? ""
+                notes = taskToEdit.notes ?? ""
+                selectedTabID = taskToEdit.tab?.objectID ?? selectedTab?.objectID ?? availableTabs.first?.objectID
+                
+                if let due = taskToEdit.dueDate {
+                    hasDueDate = true
+                    dueDate = due
+                }
+                
+                if let type = taskToEdit.recurrenceType {
+                    hasRecurrence = true
+                    recurrenceType = type
+                    
+                    if let ruleString = taskToEdit.recurrenceRule,
+                       let ruleData = ruleString.data(using: .utf8),
+                       let rule = try? JSONDecoder().decode(RecurrenceRule.self, from: ruleData) {
+                        if type == "weekly" {
+                            selectedWeekdays = Set(rule.weekdays ?? [])
+                        } else if type == "custom" {
+                            customInterval = rule.interval ?? 1
+                        }
+                    }
+                }
+            } else {
+                selectedTabID = selectedTab?.objectID ?? availableTabs.first?.objectID
+            }
         }
     }
     
@@ -950,21 +1166,27 @@ struct AddTodoTaskView: View {
         }
         
         let now = Date()
-        let newTask = TodoTask(context: viewContext)
-        newTask.title = trimmedTitle
-        newTask.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        newTask.tab = tab
-        newTask.id = UUID()
-        newTask.createdDate = now
-        newTask.modifiedDate = now  // Critical for CloudKit sync
-        newTask.isCompleted = false
+        let task = taskToEdit ?? TodoTask(context: viewContext)
+        
+        task.title = trimmedTitle
+        task.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        task.tab = tab
+        task.modifiedDate = now
+        
+        if taskToEdit == nil {
+            task.id = UUID()
+            task.createdDate = now
+            task.isCompleted = false
+        }
         
         if hasDueDate {
-            newTask.dueDate = dueDate
+            task.dueDate = dueDate
+        } else {
+            task.dueDate = nil
         }
         
         if hasRecurrence {
-            newTask.recurrenceType = recurrenceType
+            task.recurrenceType = recurrenceType
             
             var rule = RecurrenceRule(type: recurrenceType)
             if recurrenceType == "weekly" {
@@ -975,20 +1197,20 @@ struct AddTodoTaskView: View {
             
             if let ruleData = try? JSONEncoder().encode(rule),
                let ruleString = String(data: ruleData, encoding: .utf8) {
-                newTask.recurrenceRule = ruleString
+                task.recurrenceRule = ruleString
             }
             
-// Use a stable baseline for recurring tasks so instances are deterministic and dedupe-safe.
-            if newTask.dueDate == nil {
-                newTask.dueDate = Date()
+            if task.dueDate == nil {
+                task.dueDate = Date()
             }
-            if let due = newTask.dueDate, let nextDue = rule.nextDueDate(from: due) {
-                newTask.nextDueDate = nextDue
+            if let due = task.dueDate, let nextDue = rule.nextDueDate(from: due) {
+                task.nextDueDate = nextDue
             }
         } else {
-            newTask.recurrenceType = "none"
+            task.recurrenceType = nil
+            task.recurrenceRule = nil
+            task.nextDueDate = nil
         }
-        
         
         if viewContext.inkSlateSave(module: "To-Do", retry: { addTask() }) {
             dismiss()
@@ -1074,6 +1296,15 @@ struct AddTodoTabView: View {
             .navigationTitle("New List")
             .inlineNavigationTitle()
             .toolbar {
+                #if os(iOS)
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.bold)
+                }
+                #endif
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
@@ -1216,6 +1447,15 @@ struct EditTodoTabView: View {
             .navigationTitle("Edit List")
             .inlineNavigationTitle()
             .toolbar {
+                #if os(iOS)
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.bold)
+                }
+                #endif
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()

@@ -54,7 +54,8 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             MacSidebarView(
                 selectedView: $selectedView,
-                onSelectMenu: selectMenu
+                onSelectMenu: selectMenu,
+                onRequestUpgrade: { presentPaywall(for: $0) }
             )
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
         } detail: {
@@ -119,17 +120,14 @@ struct ContentView: View {
             let drawerWidth = min(320, proxy.size.width * 0.82)
 
             ZStack(alignment: .leading) {
-                // Keep the outer stack stable; remount only the feature so menu swaps stay fast
-                // and features with their own stacks drop any pushed detail.
-                NavigationStack {
-                    VStack(spacing: 0) {
-                        SyncBackupWarningBanner(persistence: persistence)
-                        MainContentView(
-                            selectedView: selectedView,
-                            onRequestUpgrade: { presentPaywall(for: $0) }
-                        )
-                        .id(selectedView)
-                    }
+                // Features maintain their own NavigationStacks internally.
+                MainContentView(
+                    selectedView: selectedView,
+                    onRequestUpgrade: { presentPaywall(for: $0) }
+                )
+                .id(selectedView)
+                .safeAreaInset(edge: .bottom) {
+                    SyncBackupWarningBanner(persistence: persistence)
                 }
                 .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
                 .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
@@ -251,12 +249,15 @@ struct ContentView: View {
         .ignoresSafeArea(edges: .vertical)
 
         // Edge swipe detector when drawer is closed (always in view tree, hit-testing enabled when closed)
-        Color.clear
-            .frame(width: 44)
-            .contentShape(Rectangle())
-            .allowsHitTesting(!sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen)
-            .gesture(
-                DragGesture(minimumDistance: 8, coordinateSpace: .local)
+        VStack {
+            Spacer()
+                .frame(height: 100) // Leave top 100pt free for Navigation Back buttons
+            Color.clear
+                .frame(width: 44)
+                .contentShape(Rectangle())
+                .allowsHitTesting(!sharedStateManager.isMenuOpen && !sharedStateManager.showSplashScreen)
+                .gesture(
+                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
                     .onChanged { value in
                         if value.startLocation.x <= 48 && value.translation.width > 0 {
                             isDraggingDrawer = true
@@ -278,7 +279,8 @@ struct ContentView: View {
                         }
                     }
             )
-            .ignoresSafeArea(edges: .vertical)
+        }
+        .ignoresSafeArea(edges: .vertical)
     }
     #endif
 
@@ -346,8 +348,10 @@ struct ContentView: View {
 private struct MacSidebarView: View {
     @Binding var selectedView: MenuViewType
     var onSelectMenu: (MenuViewType) -> Void
+    var onRequestUpgrade: ((MenuViewType?) -> Void)? = nil
     @EnvironmentObject private var subscription: SubscriptionService
     @EnvironmentObject private var themeService: ThemeService
+    @EnvironmentObject private var profileService: ProfileService
     @State private var menuItems: [MenuViewType] = []
     @State private var hiddenItems: Set<MenuViewType> = []
 
@@ -371,21 +375,37 @@ private struct MacSidebarView: View {
     }
 
     var body: some View {
-        List(selection: $selectedView) {
-            Section("InkSlate") {
-                ForEach(mainSidebarItems, id: \.self) { menu in
-                    sidebarRow(for: menu)
-                }
-            }
-            if !footerSidebarItems.isEmpty {
-                Section {
-                    ForEach(footerSidebarItems, id: \.self) { menu in
+        VStack(spacing: 0) {
+            macProfileHeader
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+
+            Divider()
+                .opacity(0.3)
+
+            List(selection: $selectedView) {
+                Section("Workspace") {
+                    ForEach(mainSidebarItems, id: \.self) { menu in
                         sidebarRow(for: menu)
                     }
                 }
+                if !footerSidebarItems.isEmpty {
+                    Section {
+                        ForEach(footerSidebarItems, id: \.self) { menu in
+                            sidebarRow(for: menu)
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+
+            if !subscription.isPro {
+                Divider()
+                    .opacity(0.3)
+                proUpsellBanner
             }
         }
-        .listStyle(.sidebar)
         .navigationTitle("InkSlate")
         .tint(themeService.accentColor)
         .onAppear {
@@ -400,8 +420,109 @@ private struct MacSidebarView: View {
             loadMenuConfiguration()
         }
         .onChange(of: selectedView) { _, newValue in
-            onSelectMenu(newValue)
+            if newValue.requiresPro && !subscription.isPro {
+                onRequestUpgrade?(newValue)
+            } else {
+                onSelectMenu(newValue)
+            }
         }
+    }
+
+    private var macProfileHeader: some View {
+        Button {
+            selectedView = .profile
+            onSelectMenu(.profile)
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    if let image = profileService.userImage {
+                        Image(platformImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 32, height: 32)
+                            .clipShape(Circle())
+                    } else {
+                        Circle()
+                            .fill(themeService.accentColor.opacity(0.14))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: profileService.userIcon)
+                            .font(.system(size: 15))
+                            .foregroundStyle(themeService.accentColor)
+                    }
+                }
+                .overlay(
+                    Circle()
+                        .stroke(themeService.accentColor.opacity(0.3), lineWidth: 1)
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(profileService.userName.isEmpty ? "InkSlate" : profileService.userName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 3) {
+                        if subscription.isPro {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(themeService.accentColor)
+                            Text("Pro Member")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(themeService.accentColor)
+                        } else {
+                            Text("Mindful Workspace")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selectedView == .profile ? themeService.accentColor.opacity(0.10) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var proUpsellBanner: some View {
+        Button {
+            onRequestUpgrade?(nil)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11))
+                    .foregroundStyle(themeService.accentColor)
+
+                Text("Unlock InkSlate Pro")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(themeService.accentColor.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(themeService.accentColor.opacity(0.22), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder
@@ -411,9 +532,17 @@ private struct MacSidebarView: View {
                 Text(menu.menuTitle)
                 Spacer()
                 if menu.requiresPro && !subscription.isPro {
-                    Image(systemName: "lock.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 2) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 7.5))
+                        Text("PRO")
+                            .font(.system(size: 8.5, weight: .bold))
+                    }
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(themeService.accentColor.opacity(0.14))
+                    .foregroundStyle(themeService.accentColor)
+                    .clipShape(Capsule())
                 }
             }
         } icon: {
@@ -423,9 +552,13 @@ private struct MacSidebarView: View {
     }
 
     private func loadMenuConfiguration() {
+        cloudStore.synchronize()
+        
         let menuOrder: [String]?
         if let cloudOrder = cloudStore.array(forKey: menuOrderKey) as? [String], !cloudOrder.isEmpty {
             menuOrder = cloudOrder
+            // Persist cloud data back to UserDefaults for offline resilience
+            userDefaults.set(cloudOrder, forKey: menuOrderKey)
         } else if let localOrder = userDefaults.array(forKey: menuOrderKey) as? [String], !localOrder.isEmpty {
             menuOrder = localOrder
             cloudStore.set(localOrder, forKey: menuOrderKey)
@@ -436,7 +569,14 @@ private struct MacSidebarView: View {
 
         if let savedOrder = menuOrder {
             let orderedItems = savedOrder.compactMap { MenuViewType(rawValue: $0) }
-            menuItems = orderedItems.isEmpty ? MenuViewType.allCases : orderedItems
+            if orderedItems.isEmpty {
+                menuItems = MenuViewType.allCases
+            } else {
+                // Reconcile: append any new MenuViewType cases not in the saved order
+                let savedSet = Set(orderedItems)
+                let newItems = MenuViewType.allCases.filter { !savedSet.contains($0) }
+                menuItems = orderedItems + newItems
+            }
         } else {
             menuItems = MenuViewType.allCases
         }
@@ -444,6 +584,7 @@ private struct MacSidebarView: View {
         let hiddenItemsData: [String]?
         if let cloudHidden = cloudStore.array(forKey: hiddenMenuItemsKey) as? [String], !cloudHidden.isEmpty {
             hiddenItemsData = cloudHidden
+            userDefaults.set(cloudHidden, forKey: hiddenMenuItemsKey)
         } else if let localHidden = userDefaults.array(forKey: hiddenMenuItemsKey) as? [String], !localHidden.isEmpty {
             hiddenItemsData = localHidden
             cloudStore.set(localHidden, forKey: hiddenMenuItemsKey)

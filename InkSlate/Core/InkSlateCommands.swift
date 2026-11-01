@@ -32,6 +32,27 @@ struct InkSlateCommands: Commands {
             .keyboardShortcut("f", modifiers: .command)
         }
 
+        CommandMenu("Navigate") {
+            Button("Home") { commandContext?.selectMenu(.items) }
+                .keyboardShortcut("1", modifiers: .command)
+            Button("To-Do") { commandContext?.selectMenu(.todo) }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("Notes") { commandContext?.selectMenu(.notes) }
+                .keyboardShortcut("3", modifiers: .command)
+            Button("Recipes") { commandContext?.selectMenu(.recipes) }
+                .keyboardShortcut("4", modifiers: .command)
+            Button("Places") { commandContext?.selectMenu(.places) }
+                .keyboardShortcut("5", modifiers: .command)
+            Button("Watchlist") { commandContext?.selectMenu(.wantToWatch) }
+                .keyboardShortcut("6", modifiers: .command)
+            Button("Mind Maps") { commandContext?.selectMenu(.mindMaps) }
+                .keyboardShortcut("7", modifiers: .command)
+            Button("Journal") { commandContext?.selectMenu(.journal) }
+                .keyboardShortcut("8", modifiers: .command)
+            Button("Budget") { commandContext?.selectMenu(.budget) }
+                .keyboardShortcut("9", modifiers: .command)
+        }
+
         CommandGroup(after: .sidebar) {
             Button("Toggle Sidebar") {
                 commandContext?.toggleSidebar()
@@ -54,6 +75,7 @@ struct InkSlateCommandContext {
     var searchNotes: () -> Void = {}
     var toggleSidebar: () -> Void = {}
     var openSettings: () -> Void = {}
+    var selectMenu: (MenuViewType) -> Void = { _ in }
 }
 
 private struct InkSlateCommandContextKey: FocusedValueKey {

@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreData
+import CoreLocation
 import os
 #if canImport(UIKit)
 import UIKit
@@ -34,7 +35,7 @@ enum PlaceType: String, CaseIterable, Identifiable {
     }
 }
 
-private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
+func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
     if let typeString = category.type, let type = PlaceType(rawValue: typeString) {
         return type
     }
@@ -63,7 +64,7 @@ private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
     return .place
 }
 
-private func inferredPlaceType(for place: Place, uncategorizedAs defaultTab: PlaceType? = nil) -> PlaceType {
+func inferredPlaceType(for place: Place, uncategorizedAs defaultTab: PlaceType? = nil) -> PlaceType {
     if let category = place.category {
         return inferredPlaceType(for: category)
     }
@@ -175,6 +176,8 @@ struct PlacesMainView: View {
     @State private var selectedTab: PlaceType = .restaurant
     @State private var searchText = ""
     @State private var showingQuickAdd = false
+    @State private var showingMap = false
+    @State private var showingHomeLocation = false
     @State private var animateHeader = false
     
     @State private var editingCategory: PlaceCategory?
@@ -215,6 +218,13 @@ struct PlacesMainView: View {
                     .padding(.horizontal, DesignSystem.Spacing.lg)
                     .padding(.bottom, 100)
                 }
+            }
+            .fullScreenCoverIfAvailable(isPresented: $showingMap) {
+                PlacesMapView()
+            }
+            .inkSlateSheet(isPresented: $showingHomeLocation) {
+                HomeLocationSettingsView()
+                    .macAdaptiveSheetFrame(minWidth: 500, idealWidth: 600, minHeight: 450, idealHeight: 550)
             }
             .inkSlateSheet(isPresented: $showingQuickAdd) {
                 QuickAddPlaceView(type: selectedTab)
@@ -268,8 +278,22 @@ struct PlacesMainView: View {
                 
                 Spacer()
                 
-                NavigationLink {
-                    PlacesMapView()
+                Button {
+                    showingHomeLocation = true
+                } label: {
+                    Image(systemName: "house")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.accent)
+                        .frame(width: 36, height: 36)
+                        .background(DesignSystem.Colors.surface)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(DesignSystem.Colors.border, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 8)
+                
+                Button {
+                    showingMap = true
                 } label: {
                     Image(systemName: "map")
                         .font(.system(size: 14, weight: .semibold))
@@ -1792,6 +1816,7 @@ struct PlaceCard: View {
     let onTap: () -> Void
     
     @State private var photoImage: PlatformImage?
+    @ObservedObject private var locationManager = SavedLocationManager.shared
     
     var body: some View {
         Button(action: onTap) {
@@ -1840,6 +1865,16 @@ struct PlaceCard: View {
                         }
                         .font(DesignSystem.Typography.caption)
                         .foregroundColor(DesignSystem.Colors.textTertiary)
+                }
+                
+                if place.latitude != 0, let distanceStr = locationManager.formattedDistance(to: place.latitude, longitude: place.longitude) {
+                    HStack(spacing: DesignSystem.Spacing.xs) {
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 8))
+                        Text(distanceStr)
+                    }
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
                 }
                 
                     HStack(spacing: DesignSystem.Spacing.md) {
@@ -1901,6 +1936,7 @@ struct PlaceDetailView: View {
     @State private var showingEditSheet = false
     @State private var photoImage: PlatformImage?
     @Environment(\.dismiss) var dismiss
+    @ObservedObject private var locationManager = SavedLocationManager.shared
     
     var body: some View {
         NavigationStack {
@@ -1951,6 +1987,17 @@ struct PlaceDetailView: View {
                                     Text(place.address ?? "")
                                         .font(DesignSystem.Typography.body)
                                         .foregroundColor(DesignSystem.Colors.textSecondary)
+                                }
+                                
+                                if place.latitude != 0, let distanceStr = locationManager.formattedDistance(to: place.latitude, longitude: place.longitude) {
+                                    HStack(spacing: DesignSystem.Spacing.sm) {
+                                        Image(systemName: "location.fill")
+                                            .foregroundColor(DesignSystem.Colors.accent)
+                                            .font(.system(size: 14))
+                                        Text(distanceStr)
+                                            .font(DesignSystem.Typography.body)
+                                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    }
                                 }
                             } else if let city = place.city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
                                 HStack(spacing: DesignSystem.Spacing.sm) {
@@ -3134,3 +3181,155 @@ struct ImagePicker: View {
     }
 }
 #endif
+
+struct HomeLocationSettingsView: View {
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var manager = SavedLocationManager.shared
+    
+    @State private var showingEditor = false
+    @State private var editingLocationId: UUID? = nil
+    @State private var editorName = ""
+    @State private var editorAddress = ""
+    @State private var tempLat: Double = 0
+    @State private var tempLng: Double = 0
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                DesignSystem.Colors.background.ignoresSafeArea()
+                
+                ScrollView {
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        ForEach(manager.locations) { loc in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(loc.name)
+                                        .font(DesignSystem.Typography.headline)
+                                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                                    if let address = loc.address {
+                                        Text(address)
+                                            .font(DesignSystem.Typography.subheadline)
+                                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    }
+                                }
+                                Spacer()
+                                
+                                if manager.activeLocationId == loc.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(DesignSystem.Colors.accent)
+                                        .font(.system(size: 20))
+                                }
+                                
+                                Menu {
+                                    Button("Make Active") { manager.setActiveLocation(id: loc.id) }
+                                    Button("Edit") { openEditor(for: loc) }
+                                    Button("Delete", role: .destructive) { manager.removeLocation(id: loc.id) }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                                        .font(.system(size: 20))
+                                        .padding(.leading, 8)
+                                }
+                            }
+                            .padding(DesignSystem.Spacing.md)
+                            .minimalistCard(.outlined)
+                            .onTapGesture { manager.setActiveLocation(id: loc.id) }
+                        }
+                        
+                        Button {
+                            openEditor(for: nil)
+                        } label: {
+                            HStack(spacing: DesignSystem.Spacing.sm) {
+                                Image(systemName: "plus")
+                                Text("Add New Location")
+                            }
+                            .font(DesignSystem.Typography.button)
+                            .foregroundColor(DesignSystem.Colors.textInverse)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, DesignSystem.Spacing.md)
+                            .background(DesignSystem.Colors.accent)
+                            .cornerRadius(DesignSystem.CornerRadius.md)
+                        }
+                        .buttonStyle(ScaleButtonStyle())
+                    }
+                    .padding(DesignSystem.Spacing.lg)
+                }
+            }
+            .navigationTitle("My Locations")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingEditor) {
+                NavigationStack {
+                    ZStack {
+                        DesignSystem.Colors.background.ignoresSafeArea()
+                        
+                        VStack(spacing: DesignSystem.Spacing.lg) {
+                            EditorTextField(title: "Location Name", placeholder: "e.g. Home, Work", text: $editorName)
+                            
+                            AddressAutocompleteField(
+                                title: "Address",
+                                placeholder: "Search for an address",
+                                text: $editorAddress,
+                                onResolved: { resolved in
+                                    editorAddress = resolved.address
+                                    tempLat = resolved.coordinate.latitude
+                                    tempLng = resolved.coordinate.longitude
+                                },
+                                onManualEdit: {
+                                    tempLat = 0
+                                    tempLng = 0
+                                }
+                            )
+                            
+                            Spacer()
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                    }
+                    .navigationTitle(editingLocationId == nil ? "New Location" : "Edit Location")
+                    .inlineNavigationTitle()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showingEditor = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save") { saveLocation() }
+                                .disabled(editorName.isEmpty || tempLat == 0)
+                        }
+                    }
+                }
+                .inkSlateSheetDetents([.medium, .large])
+            }
+        }
+    }
+    
+    private func openEditor(for location: SavedLocation?) {
+        if let loc = location {
+            editingLocationId = loc.id
+            editorName = loc.name
+            editorAddress = loc.address ?? ""
+            tempLat = loc.latitude
+            tempLng = loc.longitude
+        } else {
+            editingLocationId = nil
+            editorName = ""
+            editorAddress = ""
+            tempLat = 0
+            tempLng = 0
+        }
+        showingEditor = true
+    }
+    
+    private func saveLocation() {
+        let coord = CLLocationCoordinate2D(latitude: tempLat, longitude: tempLng)
+        if let id = editingLocationId {
+            manager.updateLocation(id: id, name: editorName, address: editorAddress, coordinate: coord)
+        } else {
+            manager.addLocation(name: editorName, address: editorAddress, coordinate: coord)
+        }
+        showingEditor = false
+    }
+}

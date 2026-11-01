@@ -8,10 +8,20 @@ import os
 final class SubscriptionService: ObservableObject {
     static let shared = SubscriptionService()
 
-    @Published private(set) var isPro = false
+    @Published private(set) var isPro: Bool = UserDefaults.standard.bool(forKey: "isPro") {
+        didSet { UserDefaults.standard.set(isPro, forKey: "isPro") }
+    }
     @Published private(set) var products: [Product] = []
     @Published private(set) var isLoadingProducts = false
-    @Published private(set) var activeProductID: String?
+    @Published private(set) var activeProductID: String? = UserDefaults.standard.string(forKey: "activeProductID") {
+        didSet {
+            if let activeProductID {
+                UserDefaults.standard.set(activeProductID, forKey: "activeProductID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "activeProductID")
+            }
+        }
+    }
     @Published private(set) var isEligibleForIntroOffer = false
     @Published var purchaseErrorMessage: String?
     @Published var isPurchasing = false

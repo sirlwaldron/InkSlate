@@ -311,9 +311,13 @@ struct SideDrawerMenuView: View {
     }
 
     private func loadMenuConfiguration() {
+        cloudStore.synchronize()
+        
         let menuOrder: [String]?
         if let cloudOrder = cloudStore.array(forKey: menuOrderKey) as? [String], !cloudOrder.isEmpty {
             menuOrder = cloudOrder
+            // Persist cloud data back to UserDefaults for offline resilience
+            userDefaults.set(cloudOrder, forKey: menuOrderKey)
         } else if let localOrder = userDefaults.array(forKey: menuOrderKey) as? [String], !localOrder.isEmpty {
             menuOrder = localOrder
             cloudStore.set(localOrder, forKey: menuOrderKey)
@@ -324,7 +328,14 @@ struct SideDrawerMenuView: View {
 
         if let savedOrder = menuOrder {
             let orderedItems = savedOrder.compactMap { MenuViewType(rawValue: $0) }
-            menuItems = orderedItems.isEmpty ? MenuViewType.allCases : orderedItems
+            if orderedItems.isEmpty {
+                menuItems = MenuViewType.allCases
+            } else {
+                // Reconcile: append any new MenuViewType cases not in the saved order
+                let savedSet = Set(orderedItems)
+                let newItems = MenuViewType.allCases.filter { !savedSet.contains($0) }
+                menuItems = orderedItems + newItems
+            }
         } else {
             menuItems = MenuViewType.allCases
         }
@@ -332,6 +343,7 @@ struct SideDrawerMenuView: View {
         let hiddenItemsData: [String]?
         if let cloudHidden = cloudStore.array(forKey: hiddenMenuItemsKey) as? [String], !cloudHidden.isEmpty {
             hiddenItemsData = cloudHidden
+            userDefaults.set(cloudHidden, forKey: hiddenMenuItemsKey)
         } else if let localHidden = userDefaults.array(forKey: hiddenMenuItemsKey) as? [String], !localHidden.isEmpty {
             hiddenItemsData = localHidden
             cloudStore.set(localHidden, forKey: hiddenMenuItemsKey)

@@ -95,6 +95,7 @@ struct SettingsView: View {
             }
 
             Section("Navigation") {
+                #if os(iOS)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Menu Style")
                         .font(DesignSystem.Typography.subheadline)
@@ -113,6 +114,17 @@ struct SettingsView: View {
                         .foregroundStyle(DesignSystem.Colors.textTertiary)
                 }
                 .padding(.vertical, 4)
+                #else
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("macOS Sidebar")
+                        .font(DesignSystem.Typography.subheadline)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    Text("InkSlate uses the native macOS sidebar for quick navigation. Customize the order and visibility of modules below.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                }
+                .padding(.vertical, 4)
+                #endif
 
                 SettingsRowButton(
                     title: "Menu Order",

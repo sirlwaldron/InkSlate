@@ -54,7 +54,7 @@ struct ModernRecipeMainView: View {
         NavigationStack {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
-                List {
+                ScrollView {
                     if filteredRecipes.isEmpty {
                         Group {
                             if searchText.isEmpty && selectedCategory == nil && !showFavoritesOnly {
@@ -63,37 +63,26 @@ struct ModernRecipeMainView: View {
                                 SearchEmptyView(searchText: searchText.isEmpty ? "your filters" : searchText)
                             }
                         }
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: DesignSystem.Spacing.xl, leading: DesignSystem.Spacing.lg, bottom: 0, trailing: DesignSystem.Spacing.lg))
+                        .padding(.top, DesignSystem.Spacing.xl)
                     } else {
-                        ForEach(filteredRecipes, id: \.objectID) { recipe in
-                            RecipeCardRow(
-                                recipe: recipe,
-                                onDelete: { recipePendingDelete = recipe }
-                            )
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(
-                                top: DesignSystem.Spacing.xs + 2,
-                                leading: DesignSystem.Spacing.lg,
-                                bottom: DesignSystem.Spacing.xs + 2,
-                                trailing: DesignSystem.Spacing.lg
-                            ))
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: DesignSystem.Spacing.md), count: 3),
+                            spacing: DesignSystem.Spacing.xl
+                        ) {
+                            ForEach(filteredRecipes, id: \.objectID) { recipe in
+                                RecipeGridCardRow(
+                                    recipe: recipe,
+                                    onDelete: { recipePendingDelete = recipe }
+                                )
+                            }
                         }
-                        
+                        .padding(DesignSystem.Spacing.lg)
+
                         addCard
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(
-                                top: DesignSystem.Spacing.xs + 2,
-                                leading: DesignSystem.Spacing.lg,
-                                bottom: DesignSystem.Spacing.xl,
-                                trailing: DesignSystem.Spacing.lg
-                            ))
+                            .padding(.horizontal, DesignSystem.Spacing.lg)
+                            .padding(.bottom, DesignSystem.Spacing.xl)
                     }
                 }
-                .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .refreshable { await refreshRecipes() }
             }
@@ -271,13 +260,13 @@ struct ModernRecipeMainView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                
+
                 FilterChip(title: "Favorites", icon: showFavoritesOnly ? "heart.fill" : "heart", isActive: showFavoritesOnly) {
                     withAnimation(.spring()) {
                         showFavoritesOnly.toggle()
                     }
                 }
-                
+
                 if let category = selectedCategory {
                     FilterChip(title: category.rawValue, icon: category.icon, isActive: true) {
                         withAnimation(.spring()) {
@@ -285,7 +274,7 @@ struct ModernRecipeMainView: View {
                         }
                     }
                 }
-                
+
                 ForEach(RecipeCategory.allCases.filter { $0 != selectedCategory }, id: \.self) { category in
                     FilterChip(title: category.rawValue, icon: category.icon, isActive: false) {
                         withAnimation(.spring()) {
@@ -298,7 +287,6 @@ struct ModernRecipeMainView: View {
         }
         .padding(.horizontal, -DesignSystem.Spacing.lg)
     }
-    
     private func deleteRecipe(_ recipe: Recipe) {
         let imagePath = recipe.imageUrl
         viewContext.delete(recipe)
@@ -560,6 +548,148 @@ struct FilterChip: View {
     }
 }
 
+// MARK: - Recipe Grid Card Row
+struct RecipeGridCardRow: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @ObservedObject var recipe: Recipe
+    let onDelete: () -> Void
+    
+    @State private var showingDetail = false
+    @State private var showingEdit = false
+    @State private var showingAddToList = false
+    @State private var showingCookMode = false
+    
+    var body: some View {
+        Button {
+            showingDetail = true
+            lightHaptic()
+        } label: {
+            ModernRecipeGridCard(recipe: recipe)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(action: toggleFavorite) {
+                Label(recipe.isFavorite ? "Unfavorite" : "Favorite", systemImage: recipe.isFavorite ? "heart.slash" : "heart")
+            }
+            Button { showingAddToList = true } label: { Label("Add to Shopping List", systemImage: "cart.badge.plus") }
+            Button { showingCookMode = true } label: { Label("Cook Mode", systemImage: "play.fill") }
+            Divider()
+            Button { showingEdit = true } label: { Label("Edit Recipe", systemImage: "pencil") }
+            Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+        }
+        .inkSlateSheet(isPresented: $showingDetail) {
+            NavigationStack {
+                ModernRecipeDetailView(recipe: recipe)
+            }
+        }
+        .inkSlateSheet(isPresented: $showingEdit) {
+            ModernAddRecipeView(editingRecipe: recipe)
+        }
+        .inkSlateSheet(isPresented: $showingAddToList) {
+            AddRecipeIngredientsToListView(recipe: recipe, onAdded: nil)
+        }
+        .cookModePresentation(isPresented: $showingCookMode, recipe: recipe)
+    }
+    
+    private func toggleFavorite() {
+        lightHaptic()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            recipe.isFavorite.toggle()
+        }
+        _ = viewContext.inkSlateSave(module: "Recipes")
+    }
+}
+
+// MARK: - Modern Recipe Grid Card
+struct ModernRecipeGridCard: View {
+    @ObservedObject var recipe: Recipe
+    @State private var borderPhase: CGFloat = 0
+
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous)
+    }
+
+    private var titleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 0,
+            bottomLeadingRadius: DesignSystem.CornerRadius.lg,
+            bottomTrailingRadius: DesignSystem.CornerRadius.lg,
+            topTrailingRadius: 0,
+            style: .continuous
+        )
+    }
+
+    var body: some View {
+        // The clear square is the only thing that sets the photo size. The
+        // bitmap sits in an overlay, so its pixel dimensions cannot grow the card.
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .overlay {
+                    RecipeCardImage(path: recipe.imageUrl)
+                }
+                .clipped()
+                .overlay(alignment: .topTrailing) {
+                    if recipe.isFavorite {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.pink)
+                            .padding(8)
+                    }
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cuisineLabel)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: 12, maxHeight: 12, alignment: .leading)
+                    .opacity(cuisineLabel.isEmpty ? 0 : 1)
+
+                Text(recipe.name ?? "Untitled")
+                    .font(DesignSystem.Typography.headline)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .topLeading)
+            }
+            .padding(DesignSystem.Spacing.md)
+            .frame(maxWidth: .infinity)
+            .background(DesignSystem.Colors.surface)
+            .overlay {
+                titleShape
+                    .strokeBorder(titleBorderGradient, lineWidth: 1.5)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .clipShape(cardShape)
+        .onAppear {
+            withAnimation(.linear(duration: 4.2).repeatForever(autoreverses: false)) {
+                borderPhase = 1
+            }
+        }
+    }
+
+    private var titleBorderGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                DesignSystem.Colors.accent.opacity(0.55),
+                DesignSystem.Colors.accent.opacity(0.12),
+                DesignSystem.Colors.accent.opacity(0.45)
+            ],
+            startPoint: UnitPoint(x: borderPhase, y: 0),
+            endPoint: UnitPoint(x: borderPhase + 0.6, y: 1)
+        )
+    }
+
+    private var cuisineLabel: String {
+        recipe.cuisine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+}
+
 // MARK: - Recipe Card Row (open + actions)
 struct RecipeCardRow: View {
     @Environment(\.managedObjectContext) private var viewContext
@@ -783,25 +913,26 @@ private struct RecipeCardImage: View {
     @State private var image: PlatformImage?
 
     var body: some View {
-        Group {
+        ZStack {
+            placeholder
             if let path,
                path.hasPrefix("http"),
                let url = URL(string: path) {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    placeholder
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    }
                 }
             } else if let image {
                 Image(platformImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                placeholder
+                    .scaledToFill()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .task(id: path) {
             guard let path, !path.hasPrefix("http") else {
                 image = nil
@@ -818,8 +949,7 @@ private struct RecipeCardImage: View {
     }
     
     private var placeholder: some View {
-        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.sm)
-            .fill(DesignSystem.Colors.backgroundSecondary)
+        DesignSystem.Colors.backgroundSecondary
             .overlay(
                 Image(systemName: "photo")
                     .foregroundColor(DesignSystem.Colors.textSecondary)
@@ -1973,7 +2103,7 @@ struct ModernRecipeDetailView: View {
                     Image(platformImage: headerImage)
                         .resizable()
                         .scaledToFill()
-                        .frame(height: 300)
+                        .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 300)
                         .clipped()
                         .cornerRadius(DesignSystem.CornerRadius.md)
                         .shadow(color: DesignSystem.Shadows.small, radius: 3, x: 0, y: 1)
@@ -1988,7 +2118,8 @@ struct ModernRecipeDetailView: View {
                         Rectangle()
                             .fill(DesignSystem.Colors.backgroundSecondary)
                     }
-                    .frame(height: 300)
+                    .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 300)
+                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md))
                     .shadow(color: DesignSystem.Shadows.small, radius: 3, x: 0, y: 1)
                 }
@@ -2285,7 +2416,7 @@ struct ModernRecipeDetailView: View {
                 }
             }
         .cookModePresentation(isPresented: $showCookMode, recipe: recipe)
-        .inkSlateSheet(isPresented: $showingEdit) {
+        .fullScreenCoverIfAvailable(isPresented: $showingEdit) {
             ModernAddRecipeView(editingRecipe: recipe)
         }
         .inkSlateSheet(isPresented: $showingAddToList) {
@@ -2804,6 +2935,7 @@ struct EnhancedCookModeView: View {
                         .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
             }
+            .macAdaptiveSheetFrame(minWidth: 550, idealWidth: 700, minHeight: 500, idealHeight: 650)
         }
         .onAppear {
             viewModel.loadSteps(from: recipe.recipeSteps)
@@ -2887,7 +3019,7 @@ struct ShoppingListMainView: View {
             NSSortDescriptor(keyPath: \ShoppingItemEntity.isChecked, ascending: true),
             NSSortDescriptor(keyPath: \ShoppingItemEntity.createdDate, ascending: false)
         ],
-        animation: .spring()
+        animation: .default
     )
     private var shoppingSections: SectionedFetchResults<String?, ShoppingItemEntity>
     

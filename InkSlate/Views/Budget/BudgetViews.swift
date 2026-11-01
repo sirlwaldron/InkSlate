@@ -865,34 +865,28 @@ struct BudgetCategoryAccordionCard: View {
     
     private var header: some View {
         HStack(spacing: DesignSystem.Spacing.md) {
-            Button {
-                onToggleCollapsed()
-                lightHaptic()
-            } label: {
-                HStack(spacing: DesignSystem.Spacing.md) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(DesignSystem.Colors.backgroundSecondary)
-                            .frame(width: 44, height: 44)
-                        
-                        Image(systemName: category.icon ?? "tag")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(DesignSystem.Colors.accent)
-                    }
+            HStack(spacing: DesignSystem.Spacing.md) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(DesignSystem.Colors.backgroundSecondary)
+                        .frame(width: 44, height: 44)
                     
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(category.displayName)
-                            .font(DesignSystem.Typography.headline)
-                            .foregroundStyle(DesignSystem.Colors.textPrimary)
-                            .lineLimit(1)
-                        
-                        Text("\(NumberFormatter.currency.string(from: NSNumber(value: totalSpent)) ?? "$0.00") spent")
-                            .font(DesignSystem.Typography.caption)
-                            .foregroundStyle(DesignSystem.Colors.textSecondary)
-                    }
+                    Image(systemName: category.icon ?? "tag")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(category.displayName)
+                        .font(DesignSystem.Typography.headline)
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                        .lineLimit(1)
+                    
+                    Text("\(NumberFormatter.currency.string(from: NSNumber(value: totalSpent)) ?? "$0.00") spent")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
                 }
             }
-            .buttonStyle(.plain)
             
             Spacer()
             
@@ -944,11 +938,24 @@ struct BudgetCategoryAccordionCard: View {
                     }
                     .buttonStyle(.plain)
                     
-                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    Button {
+                        onToggleCollapsed()
+                        lightHaptic()
+                    } label: {
+                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(DesignSystem.Colors.textTertiary)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onToggleCollapsed()
+            lightHaptic()
         }
     }
 }

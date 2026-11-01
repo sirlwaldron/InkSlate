@@ -1073,6 +1073,7 @@ struct WatchStatsView: View {
                         .foregroundColor(DesignSystem.Colors.info)
                 }
             }
+            .macAdaptiveSheetFrame(minWidth: 480, idealWidth: 540, minHeight: 460, idealHeight: 580)
         }
     }
 }
@@ -1717,6 +1718,7 @@ struct TMDBItemDetailView: View {
                         .foregroundColor(DesignSystem.Colors.info)
                 }
             }
+            .macAdaptiveSheetFrame(minWidth: 520, idealWidth: 640, minHeight: 600, idealHeight: 760)
             .task {
                 await loadFullDetails()
             }

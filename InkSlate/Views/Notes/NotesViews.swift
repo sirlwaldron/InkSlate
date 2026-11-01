@@ -12,9 +12,6 @@ import CoreData
 // MARK: - Main Notes List View
 struct NotesListView: View {
     @Environment(\.managedObjectContext) private var viewContext
-    @ObservedObject private var persistence = PersistenceController.shared
-    @FetchRequest private var normalNotes: FetchedResults<Notes>
-    @FetchRequest private var deletedNotes: FetchedResults<Notes>
 
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
@@ -52,27 +49,9 @@ struct NotesListView: View {
     @State private var isLoading = false
 
     @State private var filteredNoteIDs: [NSManagedObjectID] = []
-    @State private var isFiltering = false
+    @State private var didLoadNoteList = false
     @State private var filterGeneration = 0
     @State private var refreshWorkItem: DispatchWorkItem?
-    
-    @State private var notesChromeAppeared = false
-    
-    init() {
-        let defaultSort = [NSSortDescriptor(key: "modifiedDate", ascending: false)]
-        
-        let normalRequest = NSFetchRequest<Notes>(entityName: "Notes")
-        normalRequest.sortDescriptors = defaultSort
-        normalRequest.predicate = NSPredicate(format: "isMarkedDeleted == NO")
-        normalRequest.fetchBatchSize = 50
-        _normalNotes = FetchRequest(fetchRequest: normalRequest, animation: .default)
-        
-        let deletedRequest = NSFetchRequest<Notes>(entityName: "Notes")
-        deletedRequest.sortDescriptors = defaultSort
-        deletedRequest.predicate = NSPredicate(format: "isMarkedDeleted == YES")
-        deletedRequest.fetchBatchSize = 50
-        _deletedNotes = FetchRequest(fetchRequest: deletedRequest, animation: .default)
-    }
     
     private var defaultProject: FSProject? {
         projects.first { $0.isDefault } ?? projects.first
@@ -99,10 +78,6 @@ struct NotesListView: View {
         } else {
             lastSelectedFolderID = nil
         }
-    }
-
-    private var activeNotes: FetchedResults<Notes> {
-        showingDeletedNotes ? deletedNotes : normalNotes
     }
 
     private var tagColorByLowercasedName: [String: String] {
@@ -142,7 +117,6 @@ struct NotesListView: View {
                 showPinnedOnly: showPinnedOnly,
                 sortBy: sortBy,
                 sortDirection: sortDirection,
-                notesChromeAppeared: $notesChromeAppeared,
                 onLoadFolder: loadLastSelectedFolder,
                 onSaveFolder: saveLastSelectedFolder,
                 onPurgeTrash: purgeOldDeletedNotes,
@@ -158,16 +132,10 @@ struct NotesListView: View {
                 VStack(spacing: 0) {
                     notesHeroHeader
                     notesSearchAndFilters
-                    if filteredNotes.isEmpty, !isFiltering {
+                    if !didLoadNoteList {
+                        Spacer(minLength: 0)
+                    } else if filteredNotes.isEmpty {
                         notesEmptyState
-                    } else if isFiltering {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                            Text("Loading notes…")
-                                .font(DesignSystem.Typography.body)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        }
-                        .padding(.top, 40)
                     } else {
                         notesListView
                     }
@@ -291,7 +259,6 @@ private struct NotesListLifecycleModifier: ViewModifier {
     let showPinnedOnly: Bool
     let sortBy: SortBy
     let sortDirection: SortDirection
-    @Binding var notesChromeAppeared: Bool
     let onLoadFolder: () -> Void
     let onSaveFolder: (FSProject?) -> Void
     let onPurgeTrash: () -> Void
@@ -305,9 +272,6 @@ private struct NotesListLifecycleModifier: ViewModifier {
                 onPurgeTrash()
                 onLoadFolder()
                 onRefresh()
-                withAnimation(.easeOut(duration: 0.45)) {
-                    notesChromeAppeared = true
-                }
                 Task {
                     await NotePhotoSync.flushPendingUploads()
                 }
@@ -675,8 +639,6 @@ extension NotesListView {
         }
         .padding(.horizontal, DesignSystem.Spacing.lg)
         .padding(.top, DesignSystem.Spacing.md)
-        .opacity(notesChromeAppeared ? 1 : 0)
-        .offset(y: notesChromeAppeared ? 0 : -10)
     }
     
     private var notesHeroSubtitle: String {
@@ -779,8 +741,6 @@ extension NotesListView {
             }
         }
         .padding(.bottom, DesignSystem.Spacing.sm)
-        .opacity(notesChromeAppeared ? 1 : 0)
-        .offset(y: notesChromeAppeared ? 0 : 6)
     }
     
     private var folderChipTitle: String {
@@ -849,7 +809,9 @@ extension NotesListView {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .animation(persistence.isSyncing ? nil : .easeInOut(duration: 0.2), value: filteredNotes.map { $0.id })
+        .transaction { transaction in
+            transaction.animation = nil
+        }
         .padding(.bottom, 88)
     }
 
@@ -1130,8 +1092,7 @@ extension NotesListView {
         }()
         let scope = folderSettings?.searchScope ?? "titleAndContent"
         let filterBy = folderSettings?.filterBy ?? "all"
-        
-        isFiltering = true
+
         filterGeneration += 1
         let generation = filterGeneration
         let bg = PersistenceController.shared.backgroundContext()
@@ -1185,12 +1146,12 @@ extension NotesListView {
             case .modificationDate:
                 sortDescriptors = [NSSortDescriptor(key: "modifiedDate", ascending: ascending)]
             case .pin:
-                sortDescriptors = [
-                    NSSortDescriptor(key: "isPinned", ascending: ascending),
-                    NSSortDescriptor(key: "modifiedDate", ascending: false)
-                ]
+                // When explicitly sorting by pin, just use that. (already handled below by always putting pin first)
+                sortDescriptors = [NSSortDescriptor(key: "modifiedDate", ascending: false)]
             }
-            fetch.sortDescriptors = sortDescriptors
+            
+            // ALWAYS sort by isPinned first, descending (true first)
+            fetch.sortDescriptors = [NSSortDescriptor(key: "isPinned", ascending: false)] + sortDescriptors
             
             let ids: [NSManagedObjectID]
             if query.isEmpty {
@@ -1200,7 +1161,7 @@ extension NotesListView {
                 // formatting blob, so re-verify matches against the real plain text.
                 let noteFetch = NSFetchRequest<Notes>(entityName: "Notes")
                 noteFetch.predicate = fetch.predicate
-                noteFetch.sortDescriptors = sortDescriptors
+                noteFetch.sortDescriptors = fetch.sortDescriptors
                 noteFetch.fetchBatchSize = 80
                 let candidates = (try? bg.fetch(noteFetch)) ?? []
                 let opts: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
@@ -1215,8 +1176,12 @@ extension NotesListView {
             }
             DispatchQueue.main.async {
                 guard generation == filterGeneration else { return }
-                filteredNoteIDs = ids
-                isFiltering = false
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    filteredNoteIDs = ids
+                    didLoadNoteList = true
+                }
             }
         }
     }
@@ -1452,9 +1417,9 @@ extension Notes {
     func rowPreviewLineText() -> String {
         let trimmed = (preview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
-        let raw = (content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return "" }
-        return MarkdownSerialization.plainText(from: content ?? "")
+        let raw = content ?? ""
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        return String(MarkdownSerialization.searchablePlainText(from: raw).prefix(160))
     }
 }
 
@@ -1752,7 +1717,6 @@ struct NoteRowView: View {
                 RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous)
                     .stroke(DesignSystem.Colors.border, lineWidth: 1)
             )
-            .shadow(color: DesignSystem.Shadows.small.opacity(0.35), radius: 6, x: 0, y: 2)
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
         .simultaneousGesture(
@@ -1818,6 +1782,34 @@ struct SearchBar: View {
 }
 
 // MARK: - Note Editor View
+
+private struct NoteEditorFormattingBar: View {
+    @ObservedObject var coordinatorRef: MarkdownEditorCoordinatingRef
+
+    var body: some View {
+        MarkdownToolbarView(coordinator: coordinatorRef.value)
+            .padding(.vertical, DesignSystem.Spacing.sm)
+            .background(DesignSystem.Colors.surface)
+            .overlay(
+                Rectangle()
+                    .frame(height: 1)
+                    .foregroundColor(DesignSystem.Colors.border),
+                alignment: .bottom
+            )
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func noteEditorToolbarVisible() -> some View {
+        #if os(macOS)
+        self.toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        #else
+        self.toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        #endif
+    }
+}
+
 struct TextEditorView: View {
     private static var recentConflictSignatures: [String: Date] = [:]
 
@@ -1847,17 +1839,7 @@ struct TextEditorView: View {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    if let coordinator = coordinatorRef.value {
-                        MarkdownToolbarView(coordinator: coordinator)
-                            .padding(.vertical, DesignSystem.Spacing.sm)
-                            .background(DesignSystem.Colors.surface)
-                            .overlay(
-                                Rectangle()
-                                    .frame(height: 1)
-                                    .foregroundColor(DesignSystem.Colors.border),
-                                alignment: .bottom
-                            )
-                    }
+                    NoteEditorFormattingBar(coordinatorRef: coordinatorRef)
                     titleSection
                     NoteAttachmentsSection(note: note)
                     contentSection
@@ -1875,6 +1857,7 @@ struct TextEditorView: View {
             .navigationTitle((note.title?.isEmpty ?? true) ? "Note" : (note.title ?? "Note"))
             .inlineNavigationTitle()
             .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
+            .noteEditorToolbarVisible()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { saveAndDismiss() }
@@ -2506,17 +2489,7 @@ struct NewNoteView: View {
             ZStack {
                 DesignSystem.Colors.background.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    if let coordinator = coordinatorRef.value {
-                        MarkdownToolbarView(coordinator: coordinator)
-                            .padding(.vertical, DesignSystem.Spacing.sm)
-                            .background(DesignSystem.Colors.surface)
-                            .overlay(
-                                Rectangle()
-                                    .frame(height: 1)
-                                    .foregroundColor(DesignSystem.Colors.border),
-                                alignment: .bottom
-                            )
-                    }
+                    NoteEditorFormattingBar(coordinatorRef: coordinatorRef)
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                         Text("Title")
                             .font(DesignSystem.Typography.caption)
@@ -2587,6 +2560,7 @@ struct NewNoteView: View {
             .navigationTitle("New note")
             .inlineNavigationTitle()
             .toolbarBackgroundForNavigationBar(DesignSystem.Colors.background)
+            .noteEditorToolbarVisible()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

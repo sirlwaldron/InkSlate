@@ -26,7 +26,9 @@ struct InkSlateApp: App {
     #endif
 
     init() {
-        PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "AppInitialization") {}
+        PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "AppInitialization") {
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
     }
 
     @SceneBuilder
@@ -50,7 +52,7 @@ struct InkSlateApp: App {
                         .environmentObject(subscriptionService)
                         .preferredColorScheme(themeService.isDarkMode ? .dark : .light)
                         .tint(themeService.accentColor)
-                        .id(themeService.appearanceVersion)
+                        .id("\(themeService.appearanceVersion)-\(subscriptionService.isPro)")
                         .onOpenURL { url in
                             SharedImportManager.handleIncomingURL(url, in: persistenceController.container.viewContext)
                         }
@@ -132,6 +134,9 @@ struct InkSlateApp: App {
                                 NotificationCenter.default.post(name: .inkSlateOpenSettings, object: nil)
                                 SharedStateManager.shared.requestOpenMenu(.settings)
                                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                            },
+                            selectMenu: { menu in
+                                SharedStateManager.shared.requestOpenMenu(menu)
                             }
                         ))
                         #endif

@@ -32,6 +32,11 @@ class ThemeService: ObservableObject {
         case orange
         case pink
         case yellow
+        case cyan
+        case mint
+        case indigo
+        case brown
+        case red
 
         var id: String { rawValue }
 
@@ -44,6 +49,11 @@ class ThemeService: ObservableObject {
             case .orange: return "Sunset"
             case .pink: return "Blush"
             case .yellow: return "Sunshine"
+            case .cyan: return "Aqua"
+            case .mint: return "Mint"
+            case .indigo: return "Indigo"
+            case .brown: return "Mocha"
+            case .red: return "Ruby"
             }
         }
 
@@ -70,6 +80,21 @@ class ThemeService: ObservableObject {
             case .yellow:
                 return Color(light: Color(red: 0.90, green: 0.70, blue: 0.08),
                                dark: Color(red: 1.00, green: 0.86, blue: 0.30))
+            case .cyan:
+                return Color(light: Color(red: 0.10, green: 0.75, blue: 0.85),
+                               dark: Color(red: 0.40, green: 0.90, blue: 1.00))
+            case .mint:
+                return Color(light: Color(red: 0.00, green: 0.78, blue: 0.70),
+                               dark: Color(red: 0.40, green: 0.95, blue: 0.85))
+            case .indigo:
+                return Color(light: Color(red: 0.35, green: 0.34, blue: 0.84),
+                               dark: Color(red: 0.55, green: 0.54, blue: 1.00))
+            case .brown:
+                return Color(light: Color(red: 0.63, green: 0.45, blue: 0.30),
+                               dark: Color(red: 0.83, green: 0.65, blue: 0.50))
+            case .red:
+                return Color(light: Color(red: 0.90, green: 0.25, blue: 0.25),
+                               dark: Color(red: 1.00, green: 0.45, blue: 0.45))
             }
         }
     }
@@ -273,6 +298,11 @@ struct ThemeSettingsView: View {
                     .cornerRadius(8)
                 }
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            .scrollContentBackground(.visible)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #endif
             .navigationTitle("Theme Settings")
             #if os(iOS)
             .inlineNavigationTitle()
