@@ -472,13 +472,17 @@ struct WantToWatchMainView: View {
         newItem.isWatched = false
         newItem.mediaCategory = item.mediaType == "movie" ? "movie" : "tv"
 
-        Task {
-            await determineAndSetCategory(for: newItem)
-        }
-
         if viewContext.inkSlateSave(module: "WantToWatch") {
             searchText = ""
             searchResults = []
+            // Only look up the richer category once the item is really saved.
+            Task {
+                await determineAndSetCategory(for: newItem)
+            }
+        } else {
+            // Don't leave an unsaved copy behind: the duplicate check above would see it and silently
+            // swallow the next attempt, and it would be saved along with some unrelated later change.
+            viewContext.delete(newItem)
         }
     }
 

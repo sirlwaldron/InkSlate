@@ -320,10 +320,16 @@ class TMDBService: ObservableObject {
             return []
         }
         
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let urlString = "\(baseURL)/search/multi?api_key=\(apiKey)&query=\(encodedQuery)"
-        
-        guard let url = URL(string: urlString) else {
+        // URLQueryItem percent-encodes "&", "+", "=" and "#" in the value. `.urlQueryAllowed` leaves them
+        // as-is, so searches like "Law & Order" or "Fast & Furious" were cut off at the "&".
+        guard var components = URLComponents(string: "\(baseURL)/search/multi") else {
+            throw TMDBError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "query", value: query.trimmingCharacters(in: .whitespacesAndNewlines))
+        ]
+        guard let url = components.url else {
             throw TMDBError.invalidURL
         }
         
@@ -394,8 +400,13 @@ class TMDBService: ObservableObject {
         return try JSONDecoder().decode(TMDBCredits.self, from: data)
     }
     
+    private func fetchCreditsOrEmpty(id: Int, isMovie: Bool) async -> TMDBCredits {
+        (try? await fetchCredits(id: id, isMovie: isMovie)) ?? TMDBCredits(id: id, cast: [], crew: [])
+    }
+    
     func fetchFullDetails(id: Int, isMovie: Bool) async throws -> TMDBFullDetails {
-        async let creditsTask = fetchCredits(id: id, isMovie: isMovie)
+        // Credits are a nice-to-have: if only the credits request fails, still show the details.
+        async let creditsTask = fetchCreditsOrEmpty(id: id, isMovie: isMovie)
         
         if isMovie {
             async let detailsTask = fetchMovieDetails(id: id)
