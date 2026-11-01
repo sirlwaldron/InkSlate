@@ -24,6 +24,7 @@ class SavedLocationManager: ObservableObject {
     private let cloudStore = NSUbiquitousKeyValueStore.default
     private let defaultsKey = "InkSlate_SavedLocations"
     private let activeKey = "InkSlate_ActiveLocation"
+    private let modifiedKey = "InkSlate_SavedLocations_Modified"
     private var cloudStoreObserver: NSObjectProtocol?
     
     init() {
@@ -82,47 +83,89 @@ class SavedLocationManager: ObservableObject {
         save()
     }
     
+    private struct Snapshot {
+        var locations: [SavedLocation]
+        var activeID: UUID?
+        var modified: TimeInterval
+    }
+
+    private func readSnapshot(locationsData: Data?, activeString: String?, modified: Double) -> Snapshot? {
+        guard let data = locationsData,
+              let decoded = try? JSONDecoder().decode([SavedLocation].self, from: data) else { return nil }
+        return Snapshot(locations: decoded, activeID: activeString.flatMap(UUID.init(uuidString:)), modified: modified)
+    }
+
+    /// Loads locations from iCloud KVS and UserDefaults. The copy with the newest modification
+    /// timestamp wins, so an empty list (everything deleted) propagates between devices instead of
+    /// being overwritten by a stale non-empty copy. Data from before timestamps existed counts as
+    /// timestamp 0, and a tie prefers a non-empty iCloud copy, then the local one.
     private func load() {
-        var loadedLocations: [SavedLocation]? = nil
-        if let cloudData = cloudStore.data(forKey: defaultsKey),
-           let decoded = try? JSONDecoder().decode([SavedLocation].self, from: cloudData),
-           !decoded.isEmpty {
-            loadedLocations = decoded
-        } else if let localData = userDefaults.data(forKey: defaultsKey),
-                  let decoded = try? JSONDecoder().decode([SavedLocation].self, from: localData) {
-            loadedLocations = decoded
-            if let cloudEncoded = try? JSONEncoder().encode(decoded) {
-                cloudStore.set(cloudEncoded, forKey: defaultsKey)
-                cloudStore.synchronize()
+        let cloud = readSnapshot(
+            locationsData: cloudStore.data(forKey: defaultsKey),
+            activeString: cloudStore.string(forKey: activeKey),
+            modified: cloudStore.double(forKey: modifiedKey)
+        )
+        let local = readSnapshot(
+            locationsData: userDefaults.data(forKey: defaultsKey),
+            activeString: userDefaults.string(forKey: activeKey),
+            modified: userDefaults.double(forKey: modifiedKey)
+        )
+
+        let chosen: (snapshot: Snapshot, fromCloud: Bool)? = {
+            switch (cloud, local) {
+            case let (c?, l?):
+                if c.modified > l.modified { return (c, true) }
+                if l.modified > c.modified { return (l, false) }
+                return (!c.locations.isEmpty || l.locations.isEmpty) ? (c, true) : (l, false)
+            case let (c?, nil):
+                return (c, true)
+            case let (nil, l?):
+                return (l, false)
+            case (nil, nil):
+                return nil
+            }
+        }()
+        guard let chosen else { return }
+        let winner = chosen.snapshot
+        let cloudWon = chosen.fromCloud
+
+        if locations != winner.locations { locations = winner.locations }
+        if activeLocationId != winner.activeID { activeLocationId = winner.activeID }
+
+        // Bring the losing store in line with the winner (no timestamp bump, so this can't ping-pong).
+        persist(winner, toCloud: !cloudWon, toLocal: cloudWon)
+    }
+
+    private func persist(_ snapshot: Snapshot, toCloud: Bool, toLocal: Bool) {
+        guard let encoded = try? JSONEncoder().encode(snapshot.locations) else { return }
+        if toLocal {
+            userDefaults.set(encoded, forKey: defaultsKey)
+            userDefaults.set(snapshot.modified, forKey: modifiedKey)
+            if let id = snapshot.activeID {
+                userDefaults.set(id.uuidString, forKey: activeKey)
+            } else {
+                userDefaults.removeObject(forKey: activeKey)
             }
         }
-        
-        if let locs = loadedLocations {
-            locations = locs
-        }
-        
-        if let cloudActive = cloudStore.string(forKey: activeKey), let id = UUID(uuidString: cloudActive) {
-            activeLocationId = id
-        } else if let localActive = userDefaults.string(forKey: activeKey), let id = UUID(uuidString: localActive) {
-            activeLocationId = id
-            cloudStore.set(localActive, forKey: activeKey)
+        if toCloud {
+            cloudStore.set(encoded, forKey: defaultsKey)
+            cloudStore.set(snapshot.modified, forKey: modifiedKey)
+            if let id = snapshot.activeID {
+                cloudStore.set(id.uuidString, forKey: activeKey)
+            } else {
+                cloudStore.removeObject(forKey: activeKey)
+            }
             cloudStore.synchronize()
         }
     }
-    
+
     private func save() {
-        if let encoded = try? JSONEncoder().encode(locations) {
-            userDefaults.set(encoded, forKey: defaultsKey)
-            cloudStore.set(encoded, forKey: defaultsKey)
-        }
-        if let activeId = activeLocationId {
-            userDefaults.set(activeId.uuidString, forKey: activeKey)
-            cloudStore.set(activeId.uuidString, forKey: activeKey)
-        } else {
-            userDefaults.removeObject(forKey: activeKey)
-            cloudStore.removeObject(forKey: activeKey)
-        }
-        cloudStore.synchronize()
+        let snapshot = Snapshot(
+            locations: locations,
+            activeID: activeLocationId,
+            modified: Date().timeIntervalSince1970
+        )
+        persist(snapshot, toCloud: true, toLocal: true)
     }
     
     func distanceTo(latitude: Double, longitude: Double) -> Double? {
