@@ -689,6 +689,8 @@ struct MarkdownPreviewTextViewMac: NSViewRepresentable {
         textView.drawsBackground = false
         textView.textContainer?.containerSize = NSSize(width: preferredColumnWidth, height: .greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = false
+        context.coordinator.lastContent = content
+        context.coordinator.lastWidth = preferredColumnWidth
         if let (attr, _) = MarkdownSerialization.deserialize(content, maxWidth: preferredColumnWidth) {
             textView.textStorage?.setAttributedString(attr)
         } else {
@@ -698,8 +700,19 @@ struct MarkdownPreviewTextViewMac: NSViewRepresentable {
         return scrollView
     }
 
+    /// Remembers what is currently shown so unrelated SwiftUI updates don't rebuild the whole note.
+    final class Coordinator {
+        var lastContent: String?
+        var lastWidth: CGFloat = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
+        if context.coordinator.lastContent == content, context.coordinator.lastWidth == preferredColumnWidth { return }
+        context.coordinator.lastContent = content
+        context.coordinator.lastWidth = preferredColumnWidth
         if let (attr, _) = MarkdownSerialization.deserialize(content, maxWidth: preferredColumnWidth) {
             textView.textStorage?.setAttributedString(attr)
         } else {
