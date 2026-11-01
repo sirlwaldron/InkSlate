@@ -1148,8 +1148,10 @@ private struct EditPlaceCategoryView: View {
         category.name = trimmedName
         category.icon = selectedIcon
         category.modifiedDate = Date()
-        _ = viewContext.inkSlateSave(module: "Places")
-        dismiss()
+        // Stay open on failure so the edit isn't silently discarded.
+        if viewContext.inkSlateSave(module: "Places") {
+            dismiss()
+        }
     }
     
     private var canDeleteCategory: Bool { true }
@@ -1582,6 +1584,8 @@ struct QuickAddPlaceView: View {
             dismiss()
         } else {
             placesLog.error("Quick add place save failed")
+            // Drop the unsaved insert so tapping Save again doesn't create a second copy.
+            if !newPlace.isDeleted { viewContext.delete(newPlace) }
         }
     }
 }
@@ -2377,6 +2381,9 @@ struct PlaceEditorView: View {
     @State private var dateVisited = Date()
     @State private var isSaving = false
     @State private var saveFailedMessage: String?
+    /// New Place created by a Save attempt; reused if the save fails and the user taps Save again
+    /// (otherwise each retry inserted another Place and they were all saved together).
+    @State private var draftPlace: Place?
     @State private var currentSection = 0
     
     private var categories: [PlaceCategory] {
@@ -2504,6 +2511,10 @@ struct PlaceEditorView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        // A failed save leaves the draft inserted but unsaved; drop it so it can't be saved later.
+                        if let draftPlace, draftPlace.objectID.isTemporaryID, !draftPlace.isDeleted {
+                            viewContext.delete(draftPlace)
+                        }
                         dismiss()
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
@@ -2950,8 +2961,14 @@ struct PlaceEditorView: View {
             
             existingPlace.modifiedDate = Date()
         } else {
-            let newPlace = Place(context: viewContext)
-            let placeID = UUID()
+            let newPlace: Place
+            if let draftPlace, !draftPlace.isDeleted, draftPlace.managedObjectContext != nil {
+                newPlace = draftPlace
+            } else {
+                newPlace = Place(context: viewContext)
+                draftPlace = newPlace
+            }
+            let placeID = newPlace.id ?? UUID()
             newPlace.id = placeID
             newPlace.name = resolvedName
             newPlace.address = address

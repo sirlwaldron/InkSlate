@@ -2485,6 +2485,10 @@ struct ModernRecipeDetailView: View {
         
         let scale = Double(currentServings) / originalServings
         let scaled = baseAmount * scale
+        // `Int(Double)` traps on NaN/infinite/huge values (e.g. a servings string like "nan").
+        guard scaled.isFinite, abs(scaled) < 1_000_000_000 else {
+            return "\(rawAmount) \(unit) \(name)".trimmingCharacters(in: .whitespaces)
+        }
         let formatted: String
         if scaled.truncatingRemainder(dividingBy: 1) == 0 {
             formatted = String(Int(scaled))
