@@ -35,7 +35,8 @@ enum NotePhotoAttachment {
         let inset = textView.textContainerInset
         let pad = textView.textContainer.lineFragmentPadding
         let inner = textView.bounds.width - inset.left - inset.right - 2 * pad
-        let screenCap = max(120, UIScreen.main.bounds.width - 56)
+        let screenWidth = textView.window?.windowScene?.screen.bounds.width ?? max(textView.bounds.width, 390)
+        let screenCap = max(120, screenWidth - 56)
         if inner >= 80 {
             return min(inner, screenCap)
         }

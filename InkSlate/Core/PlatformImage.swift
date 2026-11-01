@@ -13,7 +13,13 @@ public typealias PlatformImage = NSImage
 
 var platformScreenWidth: CGFloat {
     #if canImport(UIKit)
-    return UIScreen.main.bounds.width
+    // UIScreen.main is deprecated; use the active window scene's screen instead.
+    // Only called from view bodies / UI code, which run on the main actor.
+    return MainActor.assumeIsolated {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.screen.bounds.width ?? 390
+    }
     #elseif canImport(AppKit)
     return NSScreen.main?.visibleFrame.width ?? 800
     #else

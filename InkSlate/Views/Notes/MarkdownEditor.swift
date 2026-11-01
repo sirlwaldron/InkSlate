@@ -297,7 +297,7 @@ struct MarkdownEditor: UIViewRepresentable {
             if let tv = textView {
                 column = NotePhotoAttachment.textColumnWidth(for: tv)
             } else {
-                column = max(280, UIScreen.main.bounds.width - 48)
+                column = 320 // no text view yet; same fallback width as NotePhotoAttachment.textColumnWidth
             }
             let availableWidth = max(column, 60)
             if let (attr, _) = MarkdownSerialization.deserialize(text, maxWidth: availableWidth) {
