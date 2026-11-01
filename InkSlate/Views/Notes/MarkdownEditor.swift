@@ -529,9 +529,7 @@ struct MarkdownEditor: UIViewRepresentable {
                         }
                         let newStored = newLine + (hadTrailingNewline ? "\n" : "")
                         Self.withUndoGroup(in: tv) {
-                            etv.textStorage.beginEditing()
-                            etv.textStorage.replaceCharacters(in: lineR, with: newStored)
-                            etv.textStorage.endEditing()
+                            WysiwygActionHandler.replaceRegisteringUndo(in: etv, range: lineR, with: newStored)
                             etv.selectedRange = NSRange(location: lineStart, length: 0)
                         }
                         serializeAfterAttributeChange(in: tv)
@@ -1472,6 +1470,43 @@ class WysiwygActionHandler {
         }
     }
     
+    // MARK: Undo-aware text replacement
+    // Direct NSTextStorage edits are invisible to UITextView's undo manager, so list toggles, indent,
+    // and Return-on-empty-item/Backspace-at-marker could not be undone (and undo of earlier
+    // typing then applied to shifted text). These helpers perform the same edit and register the inverse.
+
+    static func replaceRegisteringUndo(in tv: UITextView, range: NSRange, with string: String) {
+        let storage = tv.textStorage
+        guard range.location >= 0, NSMaxRange(range) <= storage.length else { return }
+        let old = storage.attributedSubstring(from: range)
+        let selectionBefore = tv.selectedRange
+        storage.replaceCharacters(in: range, with: string)
+        let newRange = NSRange(location: range.location, length: (string as NSString).length)
+        tv.undoManager?.registerUndo(withTarget: tv) { tv in
+            restoreRegisteringUndo(in: tv, range: newRange, with: old, selection: selectionBefore)
+        }
+    }
+
+    private static func restoreRegisteringUndo(
+        in tv: UITextView, range: NSRange, with attributed: NSAttributedString, selection: NSRange
+    ) {
+        let storage = tv.textStorage
+        guard range.location >= 0, NSMaxRange(range) <= storage.length else { return }
+        let current = storage.attributedSubstring(from: range)
+        let selectionNow = tv.selectedRange
+        storage.beginEditing()
+        storage.replaceCharacters(in: range, with: attributed)
+        storage.endEditing()
+        let restoredRange = NSRange(location: range.location, length: attributed.length)
+        // Registering while undoing records the redo; while redoing, it records the undo again.
+        tv.undoManager?.registerUndo(withTarget: tv) { tv in
+            restoreRegisteringUndo(in: tv, range: restoredRange, with: current, selection: selectionNow)
+        }
+        let len = storage.length
+        let loc = min(max(0, selection.location), len)
+        tv.selectedRange = NSRange(location: loc, length: min(selection.length, len - loc))
+    }
+
     static func handleReturn(in textView: EditorTextView) -> Bool {
         let lineR = textView.currentLineRange()
         let ns = textView.attributedText.string as NSString
@@ -1498,9 +1533,7 @@ class WysiwygActionHandler {
             // Remove only the list marker; keep the line break so the (now plain) empty line stays
             // and following paragraphs don't move up.
             let contentLength = line.hasSuffix("\n") ? lineR.length - 1 : lineR.length
-            textView.textStorage.beginEditing()
-            textView.textStorage.replaceCharacters(in: NSRange(location: lineR.location, length: contentLength), with: "")
-            textView.textStorage.endEditing()
+            replaceRegisteringUndo(in: textView, range: NSRange(location: lineR.location, length: contentLength), with: "")
             textView.selectedRange = NSRange(location: lineR.location, length: 0)
         }
         if (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression).location != NSNotFound,
@@ -2060,7 +2093,7 @@ class WysiwygActionHandler {
             }
             let newBlock = newLines.joined(separator: "\n")
             guard newBlock != oldBlock else { return }
-            storage.replaceCharacters(in: br, with: newBlock)
+            replaceRegisteringUndo(in: tv, range: br, with: newBlock)
             let newLen = (newBlock as NSString).length
             tv.selectedRange = NSRange(location: br.location, length: newLen)
             return
@@ -2080,7 +2113,7 @@ class WysiwygActionHandler {
         let newStored = newCore + (hadTrailingNewline ? "\n" : "")
         let pOld = listMarkerPrefixUTF16Length(line) ?? 0
         let pNew = listMarkerPrefixUTF16Length(newCore) ?? 0
-        storage.replaceCharacters(in: lineRange, with: newStored)
+        replaceRegisteringUndo(in: tv, range: lineRange, with: newStored)
         let newCursorInLine = newCursorInLineAfterListEdit(
             oldLine: line, newLine: newCore, cursorInLine: cursorInLine, pOld: pOld, pNew: pNew
         )
@@ -2115,7 +2148,7 @@ class WysiwygActionHandler {
             }
             let newBlock = newLines.joined(separator: "\n")
             if newBlock == full.substring(with: br) { return }
-            storage.replaceCharacters(in: br, with: newBlock)
+            replaceRegisteringUndo(in: tv, range: br, with: newBlock)
             tv.selectedRange = NSRange(location: br.location, length: (newBlock as NSString).length)
             return
         }
@@ -2130,7 +2163,7 @@ class WysiwygActionHandler {
         )
         if newLine == line { return }
         let newStored = newLine + (hadTrailing ? "\n" : "")
-        storage.replaceCharacters(in: lineRange, with: newStored)
+        replaceRegisteringUndo(in: tv, range: lineRange, with: newStored)
         let delta = (newLine as NSString).length - (line as NSString).length
         tv.selectedRange = NSRange(
             location: min(max(0, range.location + delta), storage.length), length: 0
