@@ -153,6 +153,10 @@ struct TodoMainView: View {
                 }
             }
             .navigationTitle(selectedTab?.name ?? "To-Do")
+            .onChange(of: selectedTab?.objectID) { _, _ in
+                // The inline composer belongs to one tab's list; don't carry it over to another tab.
+                isAddingInline = false
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
@@ -1121,7 +1125,8 @@ struct AddTodoTaskView: View {
                     dueDate = due
                 }
                 
-                if let type = taskToEdit.recurrenceType {
+                // Legacy tasks may store "" or "none" for non-recurring; don't turn them into recurring ones.
+                if let type = taskToEdit.recurrenceType, !type.isEmpty, type != "none" {
                     hasRecurrence = true
                     recurrenceType = type
                     
