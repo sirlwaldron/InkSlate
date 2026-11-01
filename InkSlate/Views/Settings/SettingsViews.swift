@@ -438,6 +438,7 @@ enum InkSlateUserDefaultsKeys {
         
         "lastQuoteDate",
         "currentQuoteId",
+        "currentQuoteKey",
         
         "theme.isDarkMode",
         "theme.accentTheme",

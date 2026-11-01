@@ -11,6 +11,9 @@ class DailyQuoteService: ObservableObject {
     private let cloudStore = NSUbiquitousKeyValueStore.default
     private let lastQuoteDateKey = "lastQuoteDate"
     private let currentQuoteIdKey = "currentQuoteId"
+    /// Stable identity of the current quote (its text + author). The old `currentQuoteId` was an index
+    /// into `quotes`, so adding/reordering quotes in an update silently changed today's quote.
+    private let currentQuoteKeyKey = "currentQuoteKey"
     private var cloudStoreObserver: NSObjectProtocol?
     
     private let quotes = [
@@ -644,14 +647,17 @@ class DailyQuoteService: ObservableObject {
         let today = Calendar.current.startOfDay(for: Date())
         
         var lastQuoteDate: Date
-        var quoteId: Int?
+        var quoteKey: String?
+        var legacyIndex: Int?
         
         if let cloudDate = cloudStore.object(forKey: lastQuoteDateKey) as? Date {
             lastQuoteDate = cloudDate
-            quoteId = cloudStore.object(forKey: currentQuoteIdKey) as? Int
+            quoteKey = cloudStore.string(forKey: currentQuoteKeyKey)
+            legacyIndex = cloudStore.object(forKey: currentQuoteIdKey) as? Int
         } else if let localDate = userDefaults.object(forKey: lastQuoteDateKey) as? Date {
             lastQuoteDate = localDate
-            quoteId = userDefaults.object(forKey: currentQuoteIdKey) as? Int
+            quoteKey = userDefaults.string(forKey: currentQuoteKeyKey)
+            legacyIndex = userDefaults.object(forKey: currentQuoteIdKey) as? Int
         } else {
             lastQuoteDate = Date.distantPast
         }
@@ -660,33 +666,40 @@ class DailyQuoteService: ObservableObject {
         
         if today > lastQuoteDateStart {
             selectNewQuote()
+        } else if let key = quoteKey, let match = quotes.first(where: { $0.stableKey == key }) {
+            currentQuote = match
+        } else if quoteKey == nil, let id = legacyIndex, quotes.indices.contains(id) {
+            // Data written before stable keys existed: adopt the indexed quote and store its key.
+            currentQuote = quotes[id]
+            persistCurrentQuoteKey(quotes[id].stableKey)
         } else {
-            if let id = quoteId, id < quotes.count {
-                currentQuote = quotes[id]
-            } else {
-                currentQuote = quotes[0]
-            }
+            // The stored quote no longer exists (removed in an update): pick a fresh one for today.
+            selectNewQuote()
         }
     }
     
+    private func persistCurrentQuoteKey(_ key: String) {
+        cloudStore.set(key, forKey: currentQuoteKeyKey)
+        cloudStore.synchronize()
+        userDefaults.set(key, forKey: currentQuoteKeyKey)
+    }
+    
     private func selectNewQuote() {
-        let lastQuoteId = (cloudStore.object(forKey: currentQuoteIdKey) as? Int) 
-            ?? (userDefaults.object(forKey: currentQuoteIdKey) as? Int) 
-            ?? -1
-        var newQuoteId: Int
+        let lastKey = currentQuote?.stableKey
+            ?? cloudStore.string(forKey: currentQuoteKeyKey)
+            ?? userDefaults.string(forKey: currentQuoteKeyKey)
+        var candidates = quotes.filter { $0.stableKey != lastKey }
+        if candidates.isEmpty { candidates = quotes }
+        guard let chosen = candidates.randomElement() else { return }
         
-        repeat {
-            newQuoteId = Int.random(in: 0..<quotes.count)
-        } while newQuoteId == lastQuoteId && quotes.count > 1
-        
-        currentQuote = quotes[newQuoteId]
+        currentQuote = chosen
         
         let now = Date()
-        cloudStore.set(newQuoteId, forKey: currentQuoteIdKey)
+        cloudStore.set(chosen.stableKey, forKey: currentQuoteKeyKey)
         cloudStore.set(now, forKey: lastQuoteDateKey)
         cloudStore.synchronize()
         
-        userDefaults.set(newQuoteId, forKey: currentQuoteIdKey)
+        userDefaults.set(chosen.stableKey, forKey: currentQuoteKeyKey)
         userDefaults.set(now, forKey: lastQuoteDateKey)
     }
     
@@ -701,6 +714,9 @@ struct DailyQuote: Identifiable, Codable {
     let text: String
     let author: String
     let category: String
+    
+    /// Stable across launches and app versions (unlike `id`, which is regenerated every launch).
+    var stableKey: String { "\(text)||\(author)" }
     
     init(text: String, author: String, category: String) {
         self.id = UUID()
