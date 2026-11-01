@@ -296,9 +296,9 @@ struct ModernRecipeMainView: View {
                 guard let imagePath, !imagePath.isEmpty else { return }
                 if RecipeImageStore.isCloudRecordName(imagePath) {
                     try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: imagePath)
-                } else {
-                    RecipeImageStore.deleteImage(at: imagePath)
                 }
+                // Also drop the on-device copy (cache + disk) of a synced photo.
+                RecipeImageStore.deleteImage(at: imagePath)
             }
             fetchFilteredRecipes()
         }
@@ -1678,9 +1678,9 @@ struct ModernAddRecipeView: View {
         guard let path, !path.isEmpty, path != keepRecordName else { return }
         if RecipeImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: path)
-        } else {
-            RecipeImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        RecipeImageStore.deleteImage(at: path)
     }
 }
 
@@ -2561,9 +2561,9 @@ struct ModernRecipeDetailView: View {
         guard let path, !path.isEmpty, path != keepRecordName else { return }
         if RecipeImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: path)
-        } else {
-            RecipeImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        RecipeImageStore.deleteImage(at: path)
     }
 }
 

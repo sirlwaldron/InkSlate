@@ -506,13 +506,17 @@ private extension PlacesMainView {
         mediumHaptic()
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
     }
     
     func getOrCreateUncategorizedCategory(for type: PlaceType) -> PlaceCategory {
@@ -882,13 +886,17 @@ struct AllCategoriesView: View {
         mediumHaptic()
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
     }
     
     private func getOrCreateUncategorizedCategory() -> PlaceCategory {
@@ -1155,14 +1163,18 @@ private struct EditPlaceCategoryView: View {
     private func deleteCategory() {
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
 
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
         dismiss()
     }
     
@@ -1759,8 +1771,11 @@ struct PlacesListView: View {
     
     private func deletePlace(_ place: Place) {
         mediumHaptic()
+        let photoPath = place.photoURL
         viewContext.delete(place)
-        viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places"), let photoPath {
+            PlaceImageStore.discardPhotos(paths: [photoPath])
+        }
     }
 }
 
@@ -3050,9 +3065,9 @@ struct PlaceEditorView: View {
         guard let path, !path.isEmpty else { return }
         if PlaceImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deletePhoto(recordName: path)
-        } else {
-            PlaceImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        PlaceImageStore.deleteImage(at: path)
     }
 }
 

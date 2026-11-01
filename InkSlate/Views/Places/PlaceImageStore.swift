@@ -128,6 +128,20 @@ enum PlaceImageStore {
         }.value
     }
 
+    /// Removes the CloudKit record and on-device copy of photos that belonged to deleted places.
+    static func discardPhotos(paths: [String]) {
+        let unique = Set(paths.filter { !$0.isEmpty })
+        guard !unique.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            for path in unique {
+                if isCloudRecordName(path) {
+                    try? await CloudKitAssetService.shared.deletePhoto(recordName: path)
+                }
+                deleteImage(at: path)
+            }
+        }
+    }
+
     static func deleteImage(at path: String?) {
         guard let path, !path.isEmpty else { return }
         cacheQueue.async(flags: .barrier) {
