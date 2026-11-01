@@ -27,6 +27,10 @@ final class SubscriptionService: ObservableObject {
     @Published var isPurchasing = false
 
     private let log = Logger(subsystem: "com.lucas.InkSlateNew", category: "Subscription")
+    /// When Pro was last confirmed by StoreKit. Lets a cached Pro state survive a transient
+    /// empty/failed entitlement check (offline, StoreKit hiccup) for a limited time.
+    private static let proVerifiedAtKey = "proLastVerifiedAt"
+    private static let proGraceInterval: TimeInterval = 7 * 24 * 60 * 60
     private var transactionListener: Task<Void, Never>?
 
     private init() {
@@ -34,6 +38,8 @@ final class SubscriptionService: ObservableObject {
             self.transactionListener = self.listenForTransactionUpdates()
             await self.refreshEntitlements()
             await self.loadProducts()
+            // Subscription status can only be checked once products are loaded, so re-check now.
+            await self.refreshEntitlements()
         }
     }
 
@@ -65,9 +71,17 @@ final class SubscriptionService: ObservableObject {
         }
     }
 
-    func refreshEntitlements() async {
+    /// Re-reads entitlements from StoreKit. Returns `true` only when StoreKit confirmed Pro just now
+    /// (not when Pro is merely being kept from the cache during the grace period).
+    ///
+    /// An empty result is treated as transient unless StoreKit explicitly reported a revoked or
+    /// expired entitlement (or `allowGrace` is false): the cached Pro state is kept for up to
+    /// `proGraceInterval` after the last confirmation instead of locking the user out at once.
+    @discardableResult
+    func refreshEntitlements(allowGrace: Bool = true) async -> Bool {
         var pro = false
         var activeID: String?
+        var sawEndedEntitlement = false
 
         for await result in Transaction.currentEntitlements {
             guard let transaction = try? checkVerified(result) else { continue }
@@ -75,6 +89,8 @@ final class SubscriptionService: ObservableObject {
             if transaction.revocationDate == nil {
                 pro = true
                 activeID = transaction.productID
+            } else {
+                sawEndedEntitlement = true
             }
         }
 
@@ -90,6 +106,8 @@ final class SubscriptionService: ObservableObject {
                         case .subscribed, .inGracePeriod, .inBillingRetryPeriod:
                             pro = true
                             activeID = renewalInfo.currentProductID
+                        case .expired, .revoked:
+                            sawEndedEntitlement = true
                         default:
                             break
                         }
@@ -101,9 +119,26 @@ final class SubscriptionService: ObservableObject {
             }
         }
 
-        isPro = pro
-        activeProductID = activeID
-        log.info("Entitlements refreshed — isPro=\(pro, privacy: .public)")
+        if pro {
+            isPro = true
+            activeProductID = activeID
+            UserDefaults.standard.set(Date(), forKey: Self.proVerifiedAtKey)
+            log.info("Entitlements refreshed — isPro=true")
+            return true
+        }
+
+        if allowGrace, !sawEndedEntitlement, isPro,
+           let verifiedAt = UserDefaults.standard.object(forKey: Self.proVerifiedAtKey) as? Date,
+           Date().timeIntervalSince(verifiedAt) < Self.proGraceInterval {
+            log.info("Entitlements empty — keeping cached Pro during grace period")
+            return false
+        }
+
+        isPro = false
+        activeProductID = nil
+        UserDefaults.standard.removeObject(forKey: Self.proVerifiedAtKey)
+        log.info("Entitlements refreshed — isPro=false")
+        return false
     }
 
     func hasFreeTrial(for product: Product?) -> Bool {
@@ -160,8 +195,9 @@ final class SubscriptionService: ObservableObject {
         defer { isPurchasing = false }
         do {
             try await AppStore.sync()
-            await refreshEntitlementsWithRetry()
-            if !isPro {
+            // An explicit restore asks Apple directly, so its answer is definitive (no grace period).
+            let confirmed = await refreshEntitlementsWithRetry(allowGrace: false)
+            if !confirmed {
                 purchaseErrorMessage = "No active InkSlate Pro subscription was found for this Apple ID."
             }
         } catch {
@@ -186,9 +222,10 @@ final class SubscriptionService: ObservableObject {
 
     private func handleTransactionUpdate(_ update: VerificationResult<Transaction>) async {
         guard let transaction = try? checkVerified(update) else { return }
-        await refreshEntitlements()
+        // A revocation (refund) is an explicit signal: don't apply the grace period to it.
+        await refreshEntitlements(allowGrace: transaction.revocationDate == nil)
         await transaction.finish()
-        await refreshEntitlementsWithRetry()
+        await refreshEntitlementsWithRetry(allowGrace: transaction.revocationDate == nil)
     }
 
     private func updateIntroOfferEligibility() async {
@@ -201,14 +238,17 @@ final class SubscriptionService: ObservableObject {
         log.info("Intro offer eligible=\(self.isEligibleForIntroOffer, privacy: .public)")
     }
 
-    private func refreshEntitlementsWithRetry(maxAttempts: Int = 5) async {
+    /// Retries because a fresh purchase/restore can take a moment to show up in StoreKit.
+    /// Returns whether StoreKit confirmed Pro.
+    @discardableResult
+    private func refreshEntitlementsWithRetry(maxAttempts: Int = 5, allowGrace: Bool = true) async -> Bool {
         for attempt in 0..<maxAttempts {
-            await refreshEntitlements()
-            if isPro { return }
+            if await refreshEntitlements(allowGrace: allowGrace) { return true }
             guard attempt < maxAttempts - 1 else { break }
             let delayMs = 250 * (attempt + 1)
             try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
         }
+        return false
     }
 
     private static func describe(period: Product.SubscriptionPeriod) -> String {
