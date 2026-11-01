@@ -373,6 +373,8 @@ enum NotePhotoDiskCache {
 /// Tracks note photos that were saved locally but still need a CloudKit upload.
 enum NotePhotoSync {
     private static let defaultsKey = "InkSlate.PendingNotePhotoUploads"
+    /// enqueue/dequeue read-modify-write the same UserDefaults value from different threads.
+    private static let queueLock = NSLock()
 
     private struct PendingItem: Codable, Equatable {
         let recordName: String
@@ -389,6 +391,7 @@ enum NotePhotoSync {
     }
 
     static func enqueuePending(recordName: String, noteID: UUID) {
+        queueLock.lock(); defer { queueLock.unlock() }
         var items = loadPending()
         items.removeAll { $0.recordName == recordName }
         items.append(PendingItem(recordName: recordName, noteID: noteID.uuidString))
@@ -396,6 +399,7 @@ enum NotePhotoSync {
     }
 
     static func dequeuePending(recordName: String) {
+        queueLock.lock(); defer { queueLock.unlock() }
         var items = loadPending()
         items.removeAll { $0.recordName == recordName }
         savePending(items)
@@ -475,7 +479,12 @@ private actor NotePhotoDownloadCoordinator {
 
 /// Loads CloudKit-backed note images into the text view (editor + preview)
 enum NotePhotoCloudHydrator {
-    private static var memoryCache: [String: PlatformImage] = [:]
+    /// NSCache evicts under memory pressure; a plain dictionary of full-size photos never would.
+    private static let memoryCache: NSCache<NSString, PlatformImage> = {
+        let cache = NSCache<NSString, PlatformImage>()
+        cache.countLimit = 40
+        return cache
+    }()
     private static let lock = NSLock()
     /// Text views currently swapping placeholder bitmaps — edits from those must not mark dirty.
     private static let hydratingViews = NSHashTable<AnyObject>.weakObjects()
@@ -508,13 +517,25 @@ enum NotePhotoCloudHydrator {
     static func cachedImage(recordName: String) -> PlatformImage? {
         lock.lock()
         defer { lock.unlock() }
-        return memoryCache[recordName]
+        return memoryCache.object(forKey: recordName as NSString)
+    }
+
+    /// Forgets local copies (memory, disk, pending upload) of photos whose note was permanently deleted.
+    static func discardLocalCopies(recordNames: [String]) {
+        guard !recordNames.isEmpty else { return }
+        lock.lock()
+        for rk in recordNames { memoryCache.removeObject(forKey: rk as NSString) }
+        lock.unlock()
+        for rk in recordNames {
+            NotePhotoDiskCache.remove(recordName: rk)
+            NotePhotoSync.dequeuePending(recordName: rk)
+        }
     }
 
     static func storeInMemoryCache(_ image: PlatformImage, recordName: String) {
         lock.lock()
         defer { lock.unlock() }
-        memoryCache[recordName] = image
+        memoryCache.setObject(image, forKey: recordName as NSString)
     }
 
     static func recordNames(fromImageUrlsJSON json: String?) -> [String] {

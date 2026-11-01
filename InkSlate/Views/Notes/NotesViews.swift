@@ -933,9 +933,11 @@ extension NotesListView {
             selectedNote = nil
         }
         let noteUUID = note.id
+        let photoRecordNames = NotePhotoRefCollector.recordNames(fromImageUrlsJSON: note.imageUrls)
         viewContext.delete(note)
         if viewContext.inkSlateSave(module: "Notes") {
-            // Only remove CloudKit assets once the note is really gone.
+            // Only remove local and CloudKit assets once the note is really gone.
+            NotePhotoCloudHydrator.discardLocalCopies(recordNames: photoRecordNames)
             if let noteUUID {
                 PersistenceController.shared.cleanUpCloudAssets(forNoteIDs: [noteUUID])
             }
