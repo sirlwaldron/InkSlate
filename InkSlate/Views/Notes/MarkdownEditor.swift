@@ -519,7 +519,10 @@ struct MarkdownEditor: UIViewRepresentable {
                 if let pfx = WysiwygActionHandler.listMarkerPrefixUTF16Length(line) {
                     let lineStart = lineR.location
                     let contentStart = lineStart + pfx
-                    if range.location == contentStart {
+                    // Backspace deletes the character *before* the caret, i.e. the marker's trailing space
+                    // when the caret sits at the start of the item text. Comparing range.location with
+                    // contentStart (as before) never matched that, and instead hijacked forward-delete.
+                    if NSMaxRange(range) == contentStart {
                         var newLine = WysiwygActionHandler.removeListMarkerForToggle(line, bullet: true)
                         if newLine == line {
                             newLine = WysiwygActionHandler.removeListMarkerForToggle(line, bullet: false)
@@ -1412,77 +1415,6 @@ final class EditorTextView: UITextView {
     func currentLineString() -> String {
         let ns = attributedText.string as NSString
         return ns.substring(with: currentLineRange())
-    }
-}
-
-// MARK: - Word-style multi-level list (•/◦/▪, 1., a), 1) …)
-
-enum WordListLineKind {
-    private static let indentU = 4
-    static func listLevel(leading: String) -> Int { leading.count / indentU }
-    static func leadingPrefix(_ line: String) -> String { String(line.prefix(while: { $0 == " " })) }
-    static func detectBullet(in line: String, _ r: NSRange) -> NSRange? {
-        let m = (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression, range: r)
-        return m.location != NSNotFound ? m : nil
-    }
-    static func detectNumbered(in line: String, _ r: NSRange) -> NSRange? {
-        let n = line as NSString
-        if n.range(of: "^\\s*\\d+\\. ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        if n.range(of: "^\\s*[a-z]\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        if n.range(of: "^\\s*\\d+\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        return nil
-    }
-    static func bulletMark(forLevel l: Int) -> String {
-        if l <= 0 { return "• " }
-        if l == 1 { return "◦ " }
-        return "▪ "
-    }
-    static func nextTopLevelDecimal(before lineIndex: Int, lines: [String]) -> Int {
-        let upper = min(lineIndex - 1, lines.count - 1)
-        guard upper >= 0 else { return 1 }
-        for i in stride(from: upper, through: 0, by: -1) {
-            let raw = lines[i]
-            if raw.first == " " { continue }
-            if let r = raw.range(of: "^\\d+\\. ", options: .regularExpression) {
-                if let n = Int(String(raw[r].dropLast(2))) { return n + 1 }
-            }
-        }
-        return 1
-    }
-    static func relevelLineAfterIndent(_ line: String) -> String? {
-        let sp = leadingPrefix(line)
-        let L = listLevel(leading: sp)
-        if L == 0 { return nil }
-        let c = String(line.dropFirst(sp.count))
-        if let r = c.range(of: "^\\d+\\. ", options: .regularExpression) {
-            if L == 1, Int(String(c[r].dropLast(2))) != nil { return sp + "a) " + String(c[r.upperBound...]) }
-            if L >= 2, Int(String(c[r].dropLast(2))) != nil { return sp + "1) " + String(c[r.upperBound...]) }
-        }
-        if L >= 2, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) { return sp + "1) " + String(c[r.upperBound...]) }
-        if L == 1, c.hasPrefix("• ") { return sp + "◦ " + String(c.dropFirst(2)) }
-        if L == 1, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        if L >= 2, c.hasPrefix("• ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        if L >= 2, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        return nil
-    }
-    static func relevelLineAfterOutdent(_ line: String, allLines: [String], myIndex: Int) -> String? {
-        let sp = leadingPrefix(line)
-        let c = String(line.dropFirst(sp.count))
-        if sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
-            return "\(nextTopLevelDecimal(before: myIndex, lines: allLines)). " + String(c[r.upperBound...]) }
-        if !sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
-            let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
-            if sp.isEmpty { return "\(n). " + String(c[r.upperBound...]) }
-            return sp + "\(n). " + String(c[r.upperBound...]) }
-        if !sp.isEmpty, let r = c.range(of: "^\\d+\\) ", options: .regularExpression) {
-            if sp.isEmpty {
-                let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
-                return "\(n). " + String(c[r.upperBound...]) }
-            return sp + "a) " + String(c[r.upperBound...]) }
-        if sp.isEmpty, c.hasPrefix("◦ ") { return "• " + String(c.dropFirst(2)) }
-        if !sp.isEmpty, c.hasPrefix("◦ ") { return sp + "• " + String(c.dropFirst(2)) }
-        if !sp.isEmpty, c.hasPrefix("▪ ") { return sp + "◦ " + String(c.dropFirst(2)) }
-        return nil
     }
 }
 
