@@ -278,8 +278,6 @@ struct SettingsView: View {
             var cloudKitPhotoWarning: String?
             defer { isPerformingFactoryReset = false }
 
-            _ = FactoryResetService.shared.requestRemoteReset()
-
             do {
                 try FactoryResetService.shared.performLocalReset(
                     viewContext: viewContext,
@@ -291,6 +289,10 @@ struct SettingsView: View {
                 settingsLog.error("Factory reset failed: \(error.localizedDescription)")
                 return
             }
+
+            // Only ask the other devices to reset once this device's reset actually succeeded
+            // (previously the request went out first, so a failed local reset still prompted them).
+            _ = FactoryResetService.shared.requestRemoteReset()
 
             do {
                 try await CloudKitAssetService.shared.deleteAllCloudAssetsForFactoryReset()
