@@ -150,12 +150,25 @@ class ThemeService: ObservableObject {
         persist()
     }
 
+    private var fontSizeCommitWork: DispatchWorkItem?
+
+    /// Called for every slider tick. `appearanceVersion` is the root `.id(...)` of the app, so bumping it
+    /// rebuilds the whole UI tree; doing that on every tick of a drag rebuilt it dozens of times (and
+    /// could reset the sheet/drag). The value and preview update live (`fontSize` is @Published); the
+    /// full rebuild happens once, shortly after the user stops moving the slider.
     func applyFontSizeFromSlider(_ size: CGFloat) {
         let clamped = min(24, max(12, round(size)))
+        guard clamped != fontSize else { return }
         fontSize = clamped
         UserDefaults.standard.set(Double(clamped), forKey: Keys.fontSize)
         applyTheme()
-        appearanceVersion &+= 1
+
+        fontSizeCommitWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.appearanceVersion &+= 1
+        }
+        fontSizeCommitWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
     
     /// Back to factory defaults for the live session (the stored values are cleared by the factory reset),
