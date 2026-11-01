@@ -66,8 +66,14 @@ enum SharedImportManager {
             newNote.modifiedDate = Date()
             let plain = MarkdownSerialization.plainText(from: trimmed)
             newNote.preview = String(plain.prefix(100))
-            try? context.save()
-            PersistenceController.shared.pingSyncToPeers()
+            newNote.ensureCloudKitMetadata()
+            do {
+                try context.save()
+                PersistenceController.shared.pingSyncToPeers()
+            } catch {
+                // Don't leave an unsaved note behind to be saved with a later, unrelated change.
+                context.delete(newNote)
+            }
         }
     }
 
@@ -86,6 +92,9 @@ enum SharedImportManager {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
             return
         }
+
+        // Attachments whose upload failed earlier (offline, iCloud unavailable) are retried here.
+        retryPendingAttachmentUploads(containerURL: containerURL, in: context)
 
         let pendingDir = containerURL.appendingPathComponent(pendingPayloadDirectoryName, isDirectory: true)
         
@@ -220,6 +229,9 @@ enum SharedImportManager {
                 didSave = true
             } catch {
                 didSave = false
+                // Drop the unsaved note. Otherwise it stays inserted, the payload file is retried on the
+                // next import, and both copies get saved together (duplicate notes).
+                context.delete(newNote)
             }
             if didSave {
                     try? FileManager.default.removeItem(at: payloadURL)
@@ -255,6 +267,68 @@ enum SharedImportManager {
 }
 
 private extension SharedImportManager {
+    static let uploadClaimLock = NSLock()
+    static var uploadsInFlight = Set<UUID>()
+
+    static func claimUpload(_ id: UUID) -> Bool {
+        uploadClaimLock.lock()
+        defer { uploadClaimLock.unlock() }
+        return uploadsInFlight.insert(id).inserted
+    }
+
+    static func releaseUpload(_ id: UUID) {
+        uploadClaimLock.lock()
+        uploadsInFlight.remove(id)
+        uploadClaimLock.unlock()
+    }
+
+    /// Re-attempts uploads for share-import attachments that are still only stored in the app group
+    /// (their note entry has a `relativePath` but no `recordName`). Without this, an image shared while
+    /// offline was never attached to the note and its file stayed in the app group forever.
+    static func retryPendingAttachmentUploads(containerURL: URL, in context: NSManagedObjectContext) {
+        context.perform {
+            let request = NSFetchRequest<Notes>(entityName: "Notes")
+            request.predicate = NSPredicate(format: "attachments CONTAINS %@", "relativePath")
+            request.fetchLimit = 20
+            guard let notes = try? context.fetch(request) else { return }
+
+            for note in notes {
+                guard let noteID = note.id,
+                      let json = note.attachments,
+                      let data = json.data(using: .utf8),
+                      let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { continue }
+
+                var candidates: [(attachmentID: UUID, relativePath: String, filename: String, uti: String?, kind: String)] = []
+                for entry in entries {
+                    guard entry["recordName"] == nil,
+                          let relativePath = entry["relativePath"],
+                          let idString = entry["attachmentID"],
+                          let attachmentID = UUID(uuidString: idString) else { continue }
+                    let fileURL = containerURL.appendingPathComponent(relativePath, isDirectory: false)
+                    guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+                    candidates.append((
+                        attachmentID: attachmentID,
+                        relativePath: relativePath,
+                        filename: entry["filename"] ?? "Attachment",
+                        uti: entry["uti"],
+                        kind: entry["kind"] ?? "file"
+                    ))
+                }
+                guard !candidates.isEmpty else { continue }
+
+                let noteObjectID = note.objectID
+                Task {
+                    await uploadShareImportAttachments(
+                        containerURL: containerURL,
+                        noteObjectID: noteObjectID,
+                        noteID: noteID,
+                        items: candidates
+                    )
+                }
+            }
+        }
+    }
+
     static func uploadShareImportAttachments(
         containerURL: URL,
         noteObjectID: NSManagedObjectID,
@@ -263,6 +337,10 @@ private extension SharedImportManager {
     ) async {
 // Upload using CloudKit; update Core Data afterwards on a background context.
         var uploaded: [[String: String]] = []
+
+        // Skip attachments another upload (first attempt or a retry) is already handling.
+        let items = items.filter { claimUpload($0.attachmentID) }
+        defer { items.forEach { releaseUpload($0.attachmentID) } }
         
         for item in items {
             let sourceURL = containerURL.appendingPathComponent(item.relativePath, isDirectory: false)
@@ -335,7 +413,16 @@ private extension SharedImportManager {
                let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] {
                 merged.append(contentsOf: arr)
             }
-            merged.append(contentsOf: uploaded)
+            // Replace the pending entry (local path only) with the uploaded one instead of appending, so
+            // a note doesn't keep a stale "pending" entry that would be retried forever.
+            for entry in uploaded {
+                if let id = entry["attachmentID"],
+                   let index = merged.firstIndex(where: { $0["attachmentID"] == id }) {
+                    merged[index] = entry
+                } else {
+                    merged.append(entry)
+                }
+            }
             
             if let data = try? JSONSerialization.data(withJSONObject: merged, options: []),
                let s = String(data: data, encoding: .utf8) {
