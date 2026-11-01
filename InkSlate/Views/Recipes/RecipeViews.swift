@@ -66,7 +66,7 @@ struct ModernRecipeMainView: View {
                         .padding(.top, DesignSystem.Spacing.xl)
                     } else {
                         LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: DesignSystem.Spacing.md), count: 3),
+                            columns: [GridItem(.adaptive(minimum: 100), spacing: DesignSystem.Spacing.md)],
                             spacing: DesignSystem.Spacing.xl
                         ) {
                             ForEach(filteredRecipes, id: \.objectID) { recipe in
@@ -605,7 +605,6 @@ struct RecipeGridCardRow: View {
 // MARK: - Modern Recipe Grid Card
 struct ModernRecipeGridCard: View {
     @ObservedObject var recipe: Recipe
-    @State private var borderPhase: CGFloat = 0
 
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous)
@@ -646,7 +645,7 @@ struct ModernRecipeGridCard: View {
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 12, maxHeight: 12, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 12, alignment: .leading)
                     .opacity(cuisineLabel.isEmpty ? 0 : 1)
 
                 Text(recipe.name ?? "Untitled")
@@ -654,7 +653,7 @@ struct ModernRecipeGridCard: View {
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
             }
             .padding(DesignSystem.Spacing.md)
             .frame(maxWidth: .infinity)
@@ -666,11 +665,6 @@ struct ModernRecipeGridCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .clipShape(cardShape)
-        .onAppear {
-            withAnimation(.linear(duration: 4.2).repeatForever(autoreverses: false)) {
-                borderPhase = 1
-            }
-        }
     }
 
     private var titleBorderGradient: LinearGradient {
@@ -680,8 +674,8 @@ struct ModernRecipeGridCard: View {
                 DesignSystem.Colors.accent.opacity(0.12),
                 DesignSystem.Colors.accent.opacity(0.45)
             ],
-            startPoint: UnitPoint(x: borderPhase, y: 0),
-            endPoint: UnitPoint(x: borderPhase + 0.6, y: 1)
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
         )
     }
 
