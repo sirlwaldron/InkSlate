@@ -1548,6 +1548,17 @@ class WysiwygActionHandler {
         let lead = WordListLineKind.leadingPrefix(line)
         let L = WordListLineKind.listLevel(leading: lead)
         let cAfter = String(line.dropFirst(lead.count))
+        // Caret at the line start or inside the list marker: let the normal newline happen. Inserting
+        // "\n" + a fresh marker there produced a doubled marker ("• • item") on the pushed-down line.
+        let caret = textView.selectedRange
+        if caret.length == 0,
+           let markerMatch = (line as NSString).range(
+               of: #"^\s*([•◦▪] |\d+\. |\d+\) |[a-z]\) )"#, options: .regularExpression
+           ) as NSRange?,
+           markerMatch.location != NSNotFound,
+           caret.location - lineR.location < NSMaxRange(markerMatch) {
+            return false
+        }
         let lineIndex = (allText as NSString).substring(to: min(lineR.location, (allText as NSString).length))
             .filter { $0 == "\n" }.count
         let docLines = (allText as NSString).components(separatedBy: "\n")
