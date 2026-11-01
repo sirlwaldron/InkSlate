@@ -175,6 +175,8 @@ struct ProfileCustomizationView: View {
     @State private var tempUserName: String = ""
     @State private var tempUserIcon: String = ""
     @State private var selectedImage: PlatformImage?
+    /// The photo that was already saved when the sheet opened; Save only re-encodes/uploads a photo the user actually picked.
+    @State private var initialPhoto: PlatformImage?
     @State private var showingImagePicker = false
     @State private var showingHomeBackgroundPicker = false
     @State private var pendingHomeBackgroundImage: PlatformImage?
@@ -418,6 +420,7 @@ struct ProfileCustomizationView: View {
             tempUserName = profileService.userName
             tempUserIcon = profileService.userIcon
             selectedImage = profileService.userImage
+            initialPhoto = profileService.userImage
         }
     }
 
@@ -531,12 +534,15 @@ struct ProfileCustomizationView: View {
     }
     
     private func saveChanges() {
-        if let selectedImage = selectedImage {
+        // Only a newly picked photo is saved. Re-saving the unchanged one recompressed it on every Save
+        // and (with the sync timestamp) could overwrite a newer photo from another device.
+        if let selectedImage = selectedImage, selectedImage !== initialPhoto {
             profileService.updateProfileImage(selectedImage)
         }
         
+        let trimmedName = tempUserName.trimmingCharacters(in: .whitespacesAndNewlines)
         profileService.updateProfile(
-            name: tempUserName.isEmpty ? profileService.userName : tempUserName,
+            name: trimmedName.isEmpty ? profileService.userName : trimmedName,
             icon: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon
         )
         dismiss()

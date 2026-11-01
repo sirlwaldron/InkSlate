@@ -21,6 +21,9 @@ class ProfileService: ObservableObject {
     private let userNameKey = "profileUserName"
     private let userIconKey = "profileUserIcon"
     private let userImageKey = "profileUserImage"
+    /// Timestamp of the last profile-photo change/removal, kept in both stores so a removal on one
+    /// device wins over a stale copy on another instead of being "restored" from the local cache.
+    private let userImageModifiedKey = "profileUserImageModified"
     private let homeBackgroundScaleKey = "homeBackgroundScale"
     private let homeBackgroundOffsetXKey = "homeBackgroundOffsetX"
     private let homeBackgroundOffsetYKey = "homeBackgroundOffsetY"
@@ -121,18 +124,24 @@ class ProfileService: ObservableObject {
         let processed = processProfileImageForStorage(image)
         userImage = processed
         guard let imageData = jpegDataFittingCloudLimit(for: processed) else { return }
+        let modified = Date().timeIntervalSince1970
         saveImageToDisk(imageData, fileName: imageFileName)
         cloudStore.set(imageData, forKey: userImageKey)
+        cloudStore.set(modified, forKey: userImageModifiedKey)
         cloudStore.synchronize()
         userDefaults.set(imageData, forKey: userImageKey)
+        userDefaults.set(modified, forKey: userImageModifiedKey)
     }
 
     func removeProfileImage() {
         userImage = nil
+        let modified = Date().timeIntervalSince1970
         removeStoredImage(fileName: imageFileName)
         cloudStore.removeObject(forKey: userImageKey)
+        cloudStore.set(modified, forKey: userImageModifiedKey)
         cloudStore.synchronize()
         userDefaults.removeObject(forKey: userImageKey)
+        userDefaults.set(modified, forKey: userImageModifiedKey)
     }
 
     func updateHomeBackgroundImage(_ image: PlatformImage) {
@@ -180,6 +189,41 @@ class ProfileService: ObservableObject {
     /// These are fast since the data is already cached in memory by the OS.
     /// Falls back to an async disk load if neither in-memory source has the image.
     private func loadProfileImageSync() {
+        // Newer timestamp wins. Without this, removing the photo on one device made the other device
+        // treat its local copy as "missing from iCloud" and upload it again, bringing the photo back.
+        let cloudModified = cloudStore.double(forKey: userImageModifiedKey)
+        let localModified = userDefaults.double(forKey: userImageModifiedKey)
+        if cloudModified > localModified {
+            if let cloudData = cloudStore.data(forKey: userImageKey),
+               let image = platformImage(from: cloudData) {
+                userImage = image
+                saveImageToDisk(cloudData, fileName: imageFileName)
+                userDefaults.set(cloudData, forKey: userImageKey)
+            } else if cloudStore.data(forKey: userImageKey) == nil {
+                // Removed on another device.
+                userImage = nil
+                removeStoredImage(fileName: imageFileName)
+                userDefaults.removeObject(forKey: userImageKey)
+            } else {
+                return  // undecodable cloud data: keep what we have, retry on next change
+            }
+            userDefaults.set(cloudModified, forKey: userImageModifiedKey)
+            return
+        }
+        if localModified > cloudModified {
+            if let localData = userDefaults.data(forKey: userImageKey),
+               let image = platformImage(from: localData) {
+                userImage = image
+                cloudStore.set(localData, forKey: userImageKey)
+            } else {
+                userImage = nil
+                cloudStore.removeObject(forKey: userImageKey)
+            }
+            cloudStore.set(localModified, forKey: userImageModifiedKey)
+            cloudStore.synchronize()
+            return
+        }
+
         if let cloudData = cloudStore.data(forKey: userImageKey),
            let image = platformImage(from: cloudData) {
             userImage = image
