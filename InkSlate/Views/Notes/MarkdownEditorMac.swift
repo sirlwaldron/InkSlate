@@ -132,6 +132,11 @@ struct MarkdownEditorMac: NSViewRepresentable {
         private(set) var hasUnpublishedTyping = false
         private var saveWorkItem: DispatchWorkItem?
         private var serializeToken = 0
+        /// True while this coordinator itself is editing the storage through shouldChangeText/didChangeText
+        /// (list helpers), so its own delegate hooks don't react to those edits again.
+        private var isPerformingEdit = false
+        private var isRenumbering = false
+        private var renumberWorkItem: DispatchWorkItem?
         private(set) var lastKnownPhotoRecordNames: Set<String> = []
         private var pendingPhotoDeletions: Set<String> = []
         fileprivate var typingModes = Set<MarkdownAction>()
@@ -270,6 +275,7 @@ struct MarkdownEditorMac: NSViewRepresentable {
                 saveWorkItem = item
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
             }
+            scheduleRenumber(in: tv)
             postStyleChange(in: tv)
         }
 
@@ -307,7 +313,17 @@ struct MarkdownEditorMac: NSViewRepresentable {
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard let string = replacementString else { return true }
-            
+            if isPerformingEdit || isRenumbering || textView.hasMarkedText() { return true }
+
+            // Return: continue the list (or end it on an empty item), like iOS.
+            if string == "\n", affectedCharRange.length == 0, handleListReturn(in: textView) {
+                return false
+            }
+            // Backspace at the start of an item's text removes the marker, like iOS.
+            if string.isEmpty, affectedCharRange.length == 1, handleListBackspace(in: textView, deleting: affectedCharRange) {
+                return false
+            }
+
             if string == " ", affectedCharRange.length == 0 {
                 let full = textView.attributedString().string as NSString
                 if affectedCharRange.location <= full.length {
@@ -337,6 +353,216 @@ struct MarkdownEditorMac: NSViewRepresentable {
                 }
             }
             return true
+        }
+
+        // MARK: List editing (parity with the iOS editor)
+
+        /// Replaces `range` through NSTextView's own change pipeline so undo/redo and delegate
+        /// notifications (textDidChange -> serialization) work like a typed edit.
+        private func performEdit(in tv: NSTextView, range: NSRange, with string: String, selection: NSRange) {
+            guard let storage = tv.textStorage, NSMaxRange(range) <= storage.length else { return }
+            isPerformingEdit = true
+            defer { isPerformingEdit = false }
+            guard tv.shouldChangeText(in: range, replacementString: string) else { return }
+            storage.replaceCharacters(in: range, with: string)
+            tv.setSelectedRange(NSRange(location: min(selection.location, storage.length), length: 0))
+            tv.didChangeText()
+        }
+
+        private func lineIndex(of location: Int, in ns: NSString) -> Int {
+            var count = 0
+            let end = min(location, ns.length)
+            var i = 0
+            while i < end {
+                if ns.character(at: i) == 0x0A { count += 1 }
+                i += 1
+            }
+            return count
+        }
+
+        private func handleListReturn(in tv: NSTextView) -> Bool {
+            let sel = tv.selectedRange()
+            guard sel.length == 0 else { return false }
+            let ns = tv.string as NSString
+            guard sel.location <= ns.length else { return false }
+            let lineR = ns.lineRange(for: NSRange(location: sel.location, length: 0))
+            let line = ns.substring(with: lineR)
+            let outcome = ListEditingLogic.returnOutcome(
+                line: line,
+                caretInLine: sel.location - lineR.location,
+                lineIndex: lineIndex(of: lineR.location, in: ns),
+                docLines: ns.components(separatedBy: "\n")
+            )
+            switch outcome {
+            case .defaultBehavior:
+                return false
+            case .insert(let text):
+                isPerformingEdit = true
+                tv.insertText(text, replacementRange: sel)
+                isPerformingEdit = false
+                return true
+            case .clearMarker:
+                // Remove only the marker/indent; keep the line break so following paragraphs don't move up.
+                let contentLength = line.hasSuffix("\n") ? lineR.length - 1 : lineR.length
+                performEdit(
+                    in: tv,
+                    range: NSRange(location: lineR.location, length: contentLength),
+                    with: "",
+                    selection: NSRange(location: lineR.location, length: 0)
+                )
+                return true
+            }
+        }
+
+        private func handleListBackspace(in tv: NSTextView, deleting range: NSRange) -> Bool {
+            guard tv.selectedRange().length == 0 else { return false }
+            let ns = tv.string as NSString
+            guard NSMaxRange(range) <= ns.length else { return false }
+            let lineR = ns.lineRange(for: NSRange(location: range.location, length: 0))
+            let raw = ns.substring(with: lineR)
+            let line = raw.hasSuffix("\n") ? String(raw.dropLast()) : raw
+            guard let prefix = WysiwygActionHandler.listMarkerPrefixUTF16Length(line),
+                  NSMaxRange(range) == lineR.location + prefix else { return false }
+            let newLine = ListEditingLogic.removingListMarker(from: line)
+            guard newLine != line else { return false }
+            performEdit(
+                in: tv,
+                range: NSRange(location: lineR.location, length: (line as NSString).length),
+                with: newLine,
+                selection: NSRange(location: lineR.location, length: 0)
+            )
+            return true
+        }
+
+        /// Tab indents list lines and multi-line selections; on plain text it keeps inserting a tab.
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard !textView.hasMarkedText() else { return false }
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                let ns = textView.string as NSString
+                let lrs = WysiwygActionHandler.lineRangesCoveredBySelection(ns, textView.selectedRange())
+                guard let first = lrs.first else { return false }
+                if lrs.count == 1 && !ListEditingLogic.isListLine(ns.substring(with: first)) { return false }
+                applyIndent(outdent: false, in: textView)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                applyIndent(outdent: true, in: textView)
+                return true
+            }
+            return false
+        }
+
+        /// Indent/outdent every selected line by one level (4 spaces), re-leveling list markers.
+        /// Only the changed line heads are replaced, so formatting inside the lines is kept.
+        private func applyIndent(outdent: Bool, in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let sel = tv.selectedRange()
+            let full = storage.string as NSString
+            let lrs = WysiwygActionHandler.lineRangesCoveredBySelection(full, sel)
+            guard !lrs.isEmpty else { return }
+            let docLines = full.components(separatedBy: "\n")
+
+            var edits: [(range: NSRange, text: String)] = []
+            var totalDelta = 0
+            for lr in lrs {
+                let raw = full.substring(with: lr)
+                let line = raw.hasSuffix("\n") ? String(raw.dropLast()) : raw
+                let newLine = ListEditingLogic.indentOrOutdent(
+                    line, outdent: outdent, allDocumentLines: docLines, lineIndex: lineIndex(of: lr.location, in: full)
+                )
+                if newLine == line { continue }
+                let o = Array(line.utf16)
+                let n = Array(newLine.utf16)
+                var suffix = 0
+                while suffix < min(o.count, n.count), o[o.count - 1 - suffix] == n[n.count - 1 - suffix] { suffix += 1 }
+                let newHead = Array(n[0..<(n.count - suffix)])
+                edits.append((
+                    NSRange(location: lr.location, length: o.count - suffix),
+                    String(decoding: newHead, as: UTF16.self)
+                ))
+                totalDelta += n.count - o.count
+            }
+            guard !edits.isEmpty else { return }
+
+            let um = tv.undoManager
+            um?.beginUndoGrouping()
+            isPerformingEdit = true
+            for edit in edits.reversed() where NSMaxRange(edit.range) <= storage.length {
+                if tv.shouldChangeText(in: edit.range, replacementString: edit.text) {
+                    storage.replaceCharacters(in: edit.range, with: edit.text)
+                    tv.didChangeText()
+                }
+            }
+            isPerformingEdit = false
+            um?.endUndoGrouping()
+
+            let newSel: NSRange
+            if lrs.count > 1, let last = lrs.last {
+                let lastRaw = full.substring(with: last)
+                let lastEnd = NSMaxRange(last) - (lastRaw.hasSuffix("\n") ? 1 : 0)
+                let start = lrs[0].location
+                newSel = NSRange(location: start, length: max(0, lastEnd + totalDelta - start))
+            } else {
+                newSel = NSRange(location: max(lrs[0].location, sel.location + totalDelta), length: sel.length)
+            }
+            let len = storage.length
+            let loc = min(newSel.location, len)
+            tv.setSelectedRange(NSRange(location: loc, length: min(newSel.length, len - loc)))
+        }
+
+        // MARK: Numbered-list renumbering
+
+        private func scheduleRenumber(in tv: NSTextView) {
+            guard !isRenumbering else { return }
+            if tv.undoManager?.isUndoing == true || tv.undoManager?.isRedoing == true { return }
+            renumberWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                guard let self = self, let tv = self.textView else { return }
+                self.renumberDecimalLists(in: tv)
+            }
+            renumberWorkItem = item
+            DispatchQueue.main.async(execute: item)
+        }
+
+        /// Keeps "1. 2. 3." blocks consecutive after edits (insert/delete/move of items).
+        private func renumberDecimalLists(in tv: NSTextView) {
+            guard tv.undoManager?.isUndoing != true, tv.undoManager?.isRedoing != true,
+                  !tv.hasMarkedText(), let storage = tv.textStorage else { return }
+            let changes = ListEditingLogic.decimalRenumberChanges(in: storage.string)
+            guard !changes.isEmpty else { return }
+            let sel = tv.selectedRange()
+
+            isRenumbering = true
+            defer { isRenumbering = false }
+            let um = tv.undoManager
+            um?.beginUndoGrouping()
+            for change in changes.reversed() where NSMaxRange(change.range) <= storage.length {
+                if tv.shouldChangeText(in: change.range, replacementString: change.newMarker) {
+                    storage.replaceCharacters(in: change.range, with: change.newMarker)
+                    tv.didChangeText()
+                }
+            }
+            um?.endUndoGrouping()
+
+            /// Maps an offset in the old text to the new text (changes are ascending, in old coordinates).
+            func adjusted(_ position: Int) -> Int {
+                var shift = 0
+                for change in changes {
+                    let newLen = (change.newMarker as NSString).length
+                    if NSMaxRange(change.range) <= position {
+                        shift += newLen - change.range.length
+                    } else if change.range.location < position {
+                        return change.range.location + shift + newLen   // caret was inside the marker
+                    } else {
+                        break
+                    }
+                }
+                return position + shift
+            }
+            let len = storage.length
+            let start = max(0, min(adjusted(sel.location), len))
+            let end = max(start, min(adjusted(NSMaxRange(sel)), len))
+            tv.setSelectedRange(NSRange(location: start, length: end - start))
         }
 
         private func syncFromTextView(_ tv: NSTextView) {
