@@ -2459,6 +2459,7 @@ struct NewNoteView: View {
     @State private var title: String = ""
     @State private var content: String = ""
     @State private var draftNoteCloudID = UUID()
+    @State private var didSaveDraft = false
     @State private var project: FSProject?
     @State private var showingError = false
     @State private var errorMessage = ""
@@ -2545,7 +2546,10 @@ struct NewNoteView: View {
             .noteEditorToolbarVisible()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        discardDraftPhotos()
+                        dismiss()
+                    }
                         .font(DesignSystem.Typography.button)
                         .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
@@ -2561,6 +2565,15 @@ struct NewNoteView: View {
                 project = selectedProject
             }
         }
+    }
+
+    /// Cancelling a draft must not leave its uploaded photos behind (CloudKit + on-device copies).
+    private func discardDraftPhotos() {
+        guard !didSaveDraft else { return }
+        let names = coordinatorRef.value?.allTrackedPhotoRecordNames() ?? []
+        guard !names.isEmpty else { return }
+        NotePhotoCloudHydrator.discardLocalCopies(recordNames: Array(names))
+        PersistenceController.shared.cleanUpCloudAssets(forNoteIDs: [draftNoteCloudID])
     }
 
     private func saveNote() {
@@ -2596,6 +2609,7 @@ struct NewNoteView: View {
         viewContext.insert(newNote)
 
         if viewContext.inkSlateSave(module: "Notes") {
+            didSaveDraft = true
             coordinatorRef.value?.commitPendingPhotoDeletions()
             dismiss()
         } else {

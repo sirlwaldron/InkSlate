@@ -933,6 +933,14 @@ struct MarkdownEditor: UIViewRepresentable {
             }
         }
 
+        func allTrackedPhotoRecordNames() -> Set<String> {
+            var names = lastKnownPhotoRecordNames.union(pendingPhotoDeletions)
+            if let tv = textView {
+                names.formUnion(NotePhotoRefCollector.recordNames(in: tv.attributedText))
+            }
+            return names
+        }
+
         func commitPendingPhotoDeletions() {
             let toDelete = pendingPhotoDeletions
             pendingPhotoDeletions.removeAll()

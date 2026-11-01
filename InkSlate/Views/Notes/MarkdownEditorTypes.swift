@@ -26,6 +26,8 @@ protocol MarkdownEditorCoordinating: AnyObject {
     func flushPendingEditsToParent()
     func applyExternalSerializedContent(_ text: String)
     func commitPendingPhotoDeletions()
+    /// Record names of every note photo this editor knows about (in the text or removed but not yet purged).
+    func allTrackedPhotoRecordNames() -> Set<String>
     func serializeContent(from attributed: NSAttributedString) -> String
     func currentSerializedContent() -> String?
     func currentImageUrlsJSON() -> String?

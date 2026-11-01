@@ -179,6 +179,23 @@ struct MarkdownEditorMac: NSViewRepresentable {
             postStyleChange(in: tv)
         }
 
+        func allTrackedPhotoRecordNames() -> Set<String> {
+            var names = lastKnownPhotoRecordNames.union(pendingPhotoDeletions)
+            if let tv = textView {
+                names.formUnion(NotePhotoRefCollector.recordNames(in: tv.attributedString()))
+            }
+            return names
+        }
+
+        /// Photos removed from the text are purged (disk + CloudKit) when the note is saved.
+        private func trackRemovedPhotos(in attributed: NSAttributedString) {
+            let newSet = NotePhotoRefCollector.recordNames(in: attributed)
+            let removed = lastKnownPhotoRecordNames.subtracting(newSet)
+            lastKnownPhotoRecordNames = newSet
+            pendingPhotoDeletions.formUnion(removed)
+            pendingPhotoDeletions.subtract(newSet)
+        }
+
         func commitPendingPhotoDeletions() {
             let pending = pendingPhotoDeletions
             pendingPhotoDeletions.removeAll()
@@ -209,7 +226,7 @@ struct MarkdownEditorMac: NSViewRepresentable {
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = tv.selectedRange()
-            refreshKnownPhotoRecordNames(from: tv.attributedString())
+            trackRemovedPhotos(in: tv.attributedString())
             postStyleChange(in: tv)
         }
 
