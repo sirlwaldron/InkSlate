@@ -562,7 +562,9 @@ final class CloudKitAssetService {
         try await zoneGate.ensureExists(database: database, zoneName: Self.noteAttachmentsZoneName, logger: logger)
         
         let recordID = CKRecord.ID(recordName: recordName, zoneID: noteAttachmentsZoneID)
-        let record = CKRecord(recordType: "NoteAttachment", recordID: recordID)
+        // Reuse an existing record: if an earlier upload succeeded but the note was never updated, saving
+        // a brand-new CKRecord with the same ID fails with serverRecordChanged on every retry.
+        let record = try await fetchOrCreateRecord(database: database, recordID: recordID, recordType: "NoteAttachment")
         record["file"] = asset
         record["noteID"] = noteID.uuidString
         record["filename"] = filename

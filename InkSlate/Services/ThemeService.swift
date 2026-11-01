@@ -158,6 +158,16 @@ class ThemeService: ObservableObject {
         appearanceVersion &+= 1
     }
     
+    /// Back to factory defaults for the live session (the stored values are cleared by the factory reset),
+    /// so the app doesn't keep the old theme until it is relaunched.
+    func resetToDefaults() {
+        isDarkMode = false
+        accentTheme = .graphite
+        dynamicFonts = true
+        fontSize = 16
+        appearanceVersion &+= 1
+    }
+
     private func persist() {
         let defaults = UserDefaults.standard
         defaults.set(isDarkMode, forKey: Keys.isDarkMode)

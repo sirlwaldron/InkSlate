@@ -90,6 +90,7 @@ final class FactoryResetService {
         clearLocalFileStorage()
 
         ProfileService.shared.resetToDefaults()
+        ThemeService.shared.resetToDefaults()
         shared.resetToDefaults()
     }
 
