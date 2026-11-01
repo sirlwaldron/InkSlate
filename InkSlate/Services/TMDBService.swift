@@ -60,11 +60,13 @@ struct TMDBTVDetails: Codable {
     let posterPath: String?
     let backdropPath: String?
     let networks: [TMDBNetwork]?
+    let createdBy: [TMDBCreator]?
     let originalLanguage: String?
     let originCountries: [String]?
     
     enum CodingKeys: String, CodingKey {
         case id, name, overview, genres, tagline, status, networks
+        case createdBy = "created_by"
         case episodeRunTime = "episode_run_time"
         case firstAirDate = "first_air_date"
         case lastAirDate = "last_air_date"
@@ -86,6 +88,18 @@ struct TMDBTVDetails: Codable {
 struct TMDBGenre: Codable, Identifiable {
     let id: Int
     let name: String
+}
+
+/// A series' creator, from the TV details `created_by` list (the credits `crew` rarely lists "Creator").
+struct TMDBCreator: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let profilePath: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case profilePath = "profile_path"
+    }
 }
 
 struct TMDBNetwork: Codable, Identifiable {
@@ -320,10 +334,16 @@ class TMDBService: ObservableObject {
             return []
         }
         
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let urlString = "\(baseURL)/search/multi?api_key=\(apiKey)&query=\(encodedQuery)"
-        
-        guard let url = URL(string: urlString) else {
+        // URLQueryItem percent-encodes "&", "+", "=" and "#" in the value. `.urlQueryAllowed` leaves them
+        // as-is, so searches like "Law & Order" or "Fast & Furious" were cut off at the "&".
+        guard var components = URLComponents(string: "\(baseURL)/search/multi") else {
+            throw TMDBError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "query", value: query.trimmingCharacters(in: .whitespacesAndNewlines))
+        ]
+        guard let url = components.url else {
             throw TMDBError.invalidURL
         }
         
@@ -394,8 +414,13 @@ class TMDBService: ObservableObject {
         return try JSONDecoder().decode(TMDBCredits.self, from: data)
     }
     
+    private func fetchCreditsOrEmpty(id: Int, isMovie: Bool) async -> TMDBCredits {
+        (try? await fetchCredits(id: id, isMovie: isMovie)) ?? TMDBCredits(id: id, cast: [], crew: [])
+    }
+    
     func fetchFullDetails(id: Int, isMovie: Bool) async throws -> TMDBFullDetails {
-        async let creditsTask = fetchCredits(id: id, isMovie: isMovie)
+        // Credits are a nice-to-have: if only the credits request fails, still show the details.
+        async let creditsTask = fetchCreditsOrEmpty(id: id, isMovie: isMovie)
         
         if isMovie {
             async let detailsTask = fetchMovieDetails(id: id)
@@ -424,7 +449,13 @@ class TMDBService: ObservableObject {
             async let detailsTask = fetchTVDetails(id: id)
             let (details, credits) = try await (detailsTask, creditsTask)
             
-            let creators = credits.crew.filter { $0.job == "Creator" || $0.job == "Executive Producer" }
+            // "Created By" must list the series' creators, not executive producers.
+            var creators: [TMDBCrewMember] = (details.createdBy ?? []).map {
+                TMDBCrewMember(id: $0.id, name: $0.name, job: "Creator", department: "Writing", profilePath: $0.profilePath)
+            }
+            if creators.isEmpty {
+                creators = credits.crew.filter { $0.job == "Creator" }
+            }
             
             let netNames = (details.networks ?? []).map(\.name)
             return TMDBFullDetails(

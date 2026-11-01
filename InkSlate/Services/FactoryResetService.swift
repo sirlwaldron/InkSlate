@@ -90,6 +90,7 @@ final class FactoryResetService {
         clearLocalFileStorage()
 
         ProfileService.shared.resetToDefaults()
+        ThemeService.shared.resetToDefaults()
         shared.resetToDefaults()
     }
 
@@ -156,7 +157,8 @@ final class FactoryResetService {
             let docPaths: [(String, Bool)] = [
                 ("profile-user-image.jpg", false),
                 ("home-background.jpg", false),
-                ("RecipeImages", true)
+                ("RecipeImages", true),
+                ("PlaceImages", true)
             ]
             for (relative, isDir) in docPaths {
                 let url = docs.appendingPathComponent(relative, isDirectory: isDir)
@@ -172,14 +174,19 @@ final class FactoryResetService {
         }
 
         if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            let legacy = caches.appendingPathComponent("InkSlateNotePhotoCache", isDirectory: true)
-            if fm.fileExists(atPath: legacy.path) { try? fm.removeItem(at: legacy) }
+            for name in ["InkSlateNotePhotoCache", "InkSlateNoteAttachments"] {
+                let dir = caches.appendingPathComponent(name, isDirectory: true)
+                if fm.fileExists(atPath: dir.path) { try? fm.removeItem(at: dir) }
+            }
         }
 
 // App Group share-import payload + downloaded attachments. These are written by the share
         if let group = fm.containerURL(forSecurityApplicationGroupIdentifier: SharedImportManager.appGroupID) {
             let pending = group.appendingPathComponent("pending-share-import.json", isDirectory: false)
             if fm.fileExists(atPath: pending.path) { try? fm.removeItem(at: pending) }
+            // Current payload folder (the JSON above is only the legacy single-file location).
+            let pendingDir = group.appendingPathComponent("pending-share-imports", isDirectory: true)
+            if fm.fileExists(atPath: pendingDir.path) { try? fm.removeItem(at: pendingDir) }
             let attachments = group.appendingPathComponent("share-import-attachments", isDirectory: true)
             if fm.fileExists(atPath: attachments.path) { try? fm.removeItem(at: attachments) }
         }

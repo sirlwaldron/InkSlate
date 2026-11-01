@@ -175,6 +175,8 @@ struct ProfileCustomizationView: View {
     @State private var tempUserName: String = ""
     @State private var tempUserIcon: String = ""
     @State private var selectedImage: PlatformImage?
+    /// The photo that was already saved when the sheet opened; Save only re-encodes/uploads a photo the user actually picked.
+    @State private var initialPhoto: PlatformImage?
     @State private var showingImagePicker = false
     @State private var showingHomeBackgroundPicker = false
     @State private var pendingHomeBackgroundImage: PlatformImage?
@@ -418,6 +420,7 @@ struct ProfileCustomizationView: View {
             tempUserName = profileService.userName
             tempUserIcon = profileService.userIcon
             selectedImage = profileService.userImage
+            initialPhoto = profileService.userImage
         }
     }
 
@@ -531,12 +534,15 @@ struct ProfileCustomizationView: View {
     }
     
     private func saveChanges() {
-        if let selectedImage = selectedImage {
+        // Only a newly picked photo is saved. Re-saving the unchanged one recompressed it on every Save
+        // and (with the sync timestamp) could overwrite a newer photo from another device.
+        if let selectedImage = selectedImage, selectedImage !== initialPhoto {
             profileService.updateProfileImage(selectedImage)
         }
         
+        let trimmedName = tempUserName.trimmingCharacters(in: .whitespacesAndNewlines)
         profileService.updateProfile(
-            name: tempUserName.isEmpty ? profileService.userName : tempUserName,
+            name: trimmedName.isEmpty ? profileService.userName : trimmedName,
             icon: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon
         )
         dismiss()
@@ -568,7 +574,7 @@ private struct HomeBackgroundPreviewCard: View {
                 .scaledToFill()
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .scaleEffect(scale)
-                .offset(x: offsetX * 0.15, y: offsetY * 0.15)
+                .offset(x: offsetX * proxy.size.width, y: offsetY * proxy.size.height)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
         }
@@ -628,44 +634,50 @@ private struct HomeBackgroundEditorView: View {
                         .padding(.top, DesignSystem.Spacing.md)
                         .padding(.bottom, DesignSystem.Spacing.sm)
 
-                    ZStack {
-                        Color.black.opacity(0.08)
+                    // Offsets are stored as fractions of this frame so the crop looks the same on any screen size.
+                    GeometryReader { geo in
+                        let width = max(geo.size.width, 1)
+                        let height = max(geo.size.height, 1)
+                        ZStack {
+                            Color.black.opacity(0.08)
 
-                        if let displayImage {
-                            Image(platformImage: displayImage)
-                                .resizable()
-                                .scaledToFill()
-                                .scaleEffect(scale)
-                                .offset(offset)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .clipped()
-                        } else {
-                            ProgressView()
+                            if let displayImage {
+                                Image(platformImage: displayImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .scaleEffect(scale)
+                                    .offset(x: offset.width * width, y: offset.height * height)
+                                    .frame(width: width, height: height)
+                                    .clipped()
+                            } else {
+                                ProgressView()
+                            }
                         }
+                        .frame(width: width, height: height)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            SimultaneousGesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        offset = CGSize(
+                                            width: dragStart.width + value.translation.width / width,
+                                            height: dragStart.height + value.translation.height / height
+                                        )
+                                    }
+                                    .onEnded { _ in
+                                        dragStart = offset
+                                    },
+                                MagnificationGesture()
+                                    .onChanged { value in
+                                        scale = min(4, max(1, pinchStart * value))
+                                    }
+                                    .onEnded { _ in
+                                        pinchStart = scale
+                                    }
+                            )
+                        )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        SimultaneousGesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    offset = CGSize(
-                                        width: dragStart.width + value.translation.width,
-                                        height: dragStart.height + value.translation.height
-                                    )
-                                }
-                                .onEnded { _ in
-                                    dragStart = offset
-                                },
-                            MagnificationGesture()
-                                .onChanged { value in
-                                    scale = min(4, max(1, pinchStart * value))
-                                }
-                                .onEnded { _ in
-                                    pinchStart = scale
-                                }
-                        )
-                    )
                     .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous))
                     .padding(.horizontal, DesignSystem.Spacing.lg)
 

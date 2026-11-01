@@ -395,24 +395,25 @@ final class CloudKitAssetService {
 
     /// Uploads a JPEG for an inline note image; returns the CloudKit record name (`NotePhoto-{uuid}`)
     func uploadNotePhoto(_ image: PlatformImage, noteID: UUID, attachmentID: UUID) async throws -> String {
-        let tempURL: URL = try await withCheckedThrowingContinuation { continuation in
+        let imageData: Data = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let maxSize = 5 * 1024 * 1024
-                guard let imageData = image.inkSlateJPEGDataFitting(maxBytes: maxSize) else {
+                guard let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024) else {
                     continuation.resume(throwing: CloudKitAssetError.imageTooLarge)
                     return
                 }
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString)
-                    .appendingPathExtension("jpg")
-                do {
-                    try imageData.write(to: url)
-                    continuation.resume(returning: url)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                continuation.resume(returning: data)
             }
         }
+        return try await uploadNotePhoto(jpegData: imageData, noteID: noteID, attachmentID: attachmentID)
+    }
+
+    /// Uploads already-encoded JPEG bytes (avoids re-encoding a photo that was just normalized).
+    func uploadNotePhoto(jpegData imageData: Data, noteID: UUID, attachmentID: UUID) async throws -> String {
+        guard imageData.count <= 5 * 1024 * 1024 else { throw CloudKitAssetError.imageTooLarge }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("jpg")
+        try imageData.write(to: tempURL)
 
         let recordName = "NotePhoto-\(attachmentID.uuidString)"
 
@@ -501,6 +502,8 @@ final class CloudKitAssetService {
                 operation = CKQueryOperation(query: query)
                 operation.zoneID = notePhotosZoneID
             }
+            // Only record IDs are needed; without this CloudKit downloads every photo asset just to delete it.
+            operation.desiredKeys = []
             operation.resultsLimit = 200
             let nextCursor: CKQueryOperation.Cursor? = try await withCheckedThrowingContinuation { continuation in
                 operation.recordMatchedBlock = { _, result in
@@ -559,7 +562,9 @@ final class CloudKitAssetService {
         try await zoneGate.ensureExists(database: database, zoneName: Self.noteAttachmentsZoneName, logger: logger)
         
         let recordID = CKRecord.ID(recordName: recordName, zoneID: noteAttachmentsZoneID)
-        let record = CKRecord(recordType: "NoteAttachment", recordID: recordID)
+        // Reuse an existing record: if an earlier upload succeeded but the note was never updated, saving
+        // a brand-new CKRecord with the same ID fails with serverRecordChanged on every retry.
+        let record = try await fetchOrCreateRecord(database: database, recordID: recordID, recordType: "NoteAttachment")
         record["file"] = asset
         record["noteID"] = noteID.uuidString
         record["filename"] = filename

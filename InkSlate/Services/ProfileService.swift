@@ -21,9 +21,18 @@ class ProfileService: ObservableObject {
     private let userNameKey = "profileUserName"
     private let userIconKey = "profileUserIcon"
     private let userImageKey = "profileUserImage"
+    /// Timestamp of the last profile-photo change/removal, kept in both stores so a removal on one
+    /// device wins over a stale copy on another instead of being "restored" from the local cache.
+    private let userImageModifiedKey = "profileUserImageModified"
     private let homeBackgroundScaleKey = "homeBackgroundScale"
-    private let homeBackgroundOffsetXKey = "homeBackgroundOffsetX"
-    private let homeBackgroundOffsetYKey = "homeBackgroundOffsetY"
+    /// Offsets are stored as FRACTIONS of the displayed frame (new keys). The old keys held absolute
+    /// points from the editor's frame, which looked different on every screen size.
+    private let homeBackgroundOffsetXKey = "homeBackgroundRelativeOffsetX"
+    private let homeBackgroundOffsetYKey = "homeBackgroundRelativeOffsetY"
+    private let legacyHomeBackgroundOffsetXKey = "homeBackgroundOffsetX"
+    private let legacyHomeBackgroundOffsetYKey = "homeBackgroundOffsetY"
+    /// Rough editor frame the legacy point offsets were measured in (used once to convert them).
+    private let legacyOffsetReferenceSize = CGSize(width: 360, height: 520)
     private let imageFileName = "profile-user-image.jpg"
     private let homeBackgroundFileName = "home-background.jpg"
     /// Keep profile JPEG well under NSUbiquitousKeyValueStore per-key limits.
@@ -121,18 +130,24 @@ class ProfileService: ObservableObject {
         let processed = processProfileImageForStorage(image)
         userImage = processed
         guard let imageData = jpegDataFittingCloudLimit(for: processed) else { return }
+        let modified = Date().timeIntervalSince1970
         saveImageToDisk(imageData, fileName: imageFileName)
         cloudStore.set(imageData, forKey: userImageKey)
+        cloudStore.set(modified, forKey: userImageModifiedKey)
         cloudStore.synchronize()
         userDefaults.set(imageData, forKey: userImageKey)
+        userDefaults.set(modified, forKey: userImageModifiedKey)
     }
 
     func removeProfileImage() {
         userImage = nil
+        let modified = Date().timeIntervalSince1970
         removeStoredImage(fileName: imageFileName)
         cloudStore.removeObject(forKey: userImageKey)
+        cloudStore.set(modified, forKey: userImageModifiedKey)
         cloudStore.synchronize()
         userDefaults.removeObject(forKey: userImageKey)
+        userDefaults.set(modified, forKey: userImageModifiedKey)
     }
 
     func updateHomeBackgroundImage(_ image: PlatformImage) {
@@ -180,6 +195,41 @@ class ProfileService: ObservableObject {
     /// These are fast since the data is already cached in memory by the OS.
     /// Falls back to an async disk load if neither in-memory source has the image.
     private func loadProfileImageSync() {
+        // Newer timestamp wins. Without this, removing the photo on one device made the other device
+        // treat its local copy as "missing from iCloud" and upload it again, bringing the photo back.
+        let cloudModified = cloudStore.double(forKey: userImageModifiedKey)
+        let localModified = userDefaults.double(forKey: userImageModifiedKey)
+        if cloudModified > localModified {
+            if let cloudData = cloudStore.data(forKey: userImageKey),
+               let image = platformImage(from: cloudData) {
+                userImage = image
+                saveImageToDisk(cloudData, fileName: imageFileName)
+                userDefaults.set(cloudData, forKey: userImageKey)
+            } else if cloudStore.data(forKey: userImageKey) == nil {
+                // Removed on another device.
+                userImage = nil
+                removeStoredImage(fileName: imageFileName)
+                userDefaults.removeObject(forKey: userImageKey)
+            } else {
+                return  // undecodable cloud data: keep what we have, retry on next change
+            }
+            userDefaults.set(cloudModified, forKey: userImageModifiedKey)
+            return
+        }
+        if localModified > cloudModified {
+            if let localData = userDefaults.data(forKey: userImageKey),
+               let image = platformImage(from: localData) {
+                userImage = image
+                cloudStore.set(localData, forKey: userImageKey)
+            } else {
+                userImage = nil
+                cloudStore.removeObject(forKey: userImageKey)
+            }
+            cloudStore.set(localModified, forKey: userImageModifiedKey)
+            cloudStore.synchronize()
+            return
+        }
+
         if let cloudData = cloudStore.data(forKey: userImageKey),
            let image = platformImage(from: cloudData) {
             userImage = image
@@ -224,11 +274,18 @@ class ProfileService: ObservableObject {
         let scale = cloudStore.object(forKey: homeBackgroundScaleKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundScaleKey) as? Double
             ?? 1.0
+        func legacy(_ key: String, reference: CGFloat) -> Double? {
+            guard let points = cloudStore.object(forKey: key) as? Double ?? userDefaults.object(forKey: key) as? Double
+            else { return nil }
+            return max(-1, min(1, points / Double(reference)))
+        }
         let offsetX = cloudStore.object(forKey: homeBackgroundOffsetXKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundOffsetXKey) as? Double
+            ?? legacy(legacyHomeBackgroundOffsetXKey, reference: legacyOffsetReferenceSize.width)
             ?? 0
         let offsetY = cloudStore.object(forKey: homeBackgroundOffsetYKey) as? Double
             ?? userDefaults.object(forKey: homeBackgroundOffsetYKey) as? Double
+            ?? legacy(legacyHomeBackgroundOffsetYKey, reference: legacyOffsetReferenceSize.height)
             ?? 0
 
         homeBackgroundScale = max(1.0, min(scale, 4.0))

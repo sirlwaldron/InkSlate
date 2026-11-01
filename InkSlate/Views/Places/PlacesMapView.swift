@@ -417,7 +417,7 @@ struct PlaceMapCallout: View {
 
                 HStack(spacing: DesignSystem.Spacing.xs) {
                     if place.isVisited {
-                        Label("\(place.rating)/10", systemImage: "checkmark.circle.fill")
+                        Label(place.rating > 0 ? "\(place.rating)/10" : "Visited", systemImage: "checkmark.circle.fill")
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(DesignSystem.Colors.success)
                     } else {
@@ -813,7 +813,10 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
+        // The map only needs a rough position; "best" accuracy with continuous updates kept the GPS
+        // running (battery) for as long as the app stayed in the foreground.
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.distanceFilter = 100
     }
     
     func requestAuthorization() {
@@ -831,6 +834,8 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let location = locations.last {
             userLocation = location.coordinate
+            // One fix is enough; stop so location services don't stay on.
+            manager.stopUpdatingLocation()
         }
     }
     

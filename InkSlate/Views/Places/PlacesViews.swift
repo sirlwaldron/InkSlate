@@ -506,13 +506,17 @@ private extension PlacesMainView {
         mediumHaptic()
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
     }
     
     func getOrCreateUncategorizedCategory(for type: PlaceType) -> PlaceCategory {
@@ -882,13 +886,17 @@ struct AllCategoriesView: View {
         mediumHaptic()
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
     }
     
     private func getOrCreateUncategorizedCategory() -> PlaceCategory {
@@ -1140,8 +1148,10 @@ private struct EditPlaceCategoryView: View {
         category.name = trimmedName
         category.icon = selectedIcon
         category.modifiedDate = Date()
-        _ = viewContext.inkSlateSave(module: "Places")
-        dismiss()
+        // Stay open on failure so the edit isn't silently discarded.
+        if viewContext.inkSlateSave(module: "Places") {
+            dismiss()
+        }
     }
     
     private var canDeleteCategory: Bool { true }
@@ -1155,14 +1165,18 @@ private struct EditPlaceCategoryView: View {
     private func deleteCategory() {
         let fetch = NSFetchRequest<Place>(entityName: "Place")
         fetch.predicate = NSPredicate(format: "category == %@", category)
+        var photoPaths: [String] = []
         if let places = try? viewContext.fetch(fetch) {
             for place in places {
+                if let path = place.photoURL { photoPaths.append(path) }
                 viewContext.delete(place)
             }
         }
 
         viewContext.delete(category)
-        _ = viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places") {
+            PlaceImageStore.discardPhotos(paths: photoPaths)
+        }
         dismiss()
     }
     
@@ -1564,12 +1578,15 @@ struct QuickAddPlaceView: View {
         newPlace.category = selectedCategory ?? getOrCreateUncategorizedPlaceCategory(for: type, context: viewContext)
         newPlace.createdDate = Date()
         newPlace.modifiedDate = Date()
-        newPlace.rating = 10
+        // Unrated (0). It used to be 10, so every quick-added visited place showed as a perfect 10/10.
+        newPlace.rating = 0
 
         if viewContext.inkSlateSave(module: "Places") {
             dismiss()
         } else {
             placesLog.error("Quick add place save failed")
+            // Drop the unsaved insert so tapping Save again doesn't create a second copy.
+            if !newPlace.isDeleted { viewContext.delete(newPlace) }
         }
     }
 }
@@ -1759,8 +1776,11 @@ struct PlacesListView: View {
     
     private func deletePlace(_ place: Place) {
         mediumHaptic()
+        let photoPath = place.photoURL
         viewContext.delete(place)
-        viewContext.inkSlateSave(module: "Places")
+        if viewContext.inkSlateSave(module: "Places"), let photoPath {
+            PlaceImageStore.discardPhotos(paths: [photoPath])
+        }
     }
 }
 
@@ -1878,7 +1898,7 @@ struct PlaceCard: View {
                 }
                 
                     HStack(spacing: DesignSystem.Spacing.md) {
-                    if place.isVisited {
+                    if place.isVisited, place.rating > 0 {
                             HStack(spacing: DesignSystem.Spacing.xs) {
                                 ForEach(0..<5) { index in
                                     Image(systemName: index < Int(place.rating / 2) ? "star.fill" : "star")
@@ -2362,6 +2382,9 @@ struct PlaceEditorView: View {
     @State private var dateVisited = Date()
     @State private var isSaving = false
     @State private var saveFailedMessage: String?
+    /// New Place created by a Save attempt; reused if the save fails and the user taps Save again
+    /// (otherwise each retry inserted another Place and they were all saved together).
+    @State private var draftPlace: Place?
     @State private var currentSection = 0
     
     private var categories: [PlaceCategory] {
@@ -2436,7 +2459,8 @@ struct PlaceEditorView: View {
         notes = place.notes ?? ""
         hasVisited = place.isVisited
         isFavorite = place.isFavorite
-        rating = Double(place.rating)
+        // 0 = never rated (e.g. quick add): start the slider at the editor default instead of 0.
+        rating = place.rating > 0 ? Double(place.rating) : 5
         dateVisited = place.visitedDate ?? Date()
         location = place.city ?? ""
         priceRange = place.priceRange ?? ""
@@ -2489,6 +2513,10 @@ struct PlaceEditorView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        // A failed save leaves the draft inserted but unsaved; drop it so it can't be saved later.
+                        if let draftPlace, draftPlace.objectID.isTemporaryID, !draftPlace.isDeleted {
+                            viewContext.delete(draftPlace)
+                        }
                         dismiss()
                     }
                     .foregroundColor(DesignSystem.Colors.textSecondary)
@@ -2935,8 +2963,14 @@ struct PlaceEditorView: View {
             
             existingPlace.modifiedDate = Date()
         } else {
-            let newPlace = Place(context: viewContext)
-            let placeID = UUID()
+            let newPlace: Place
+            if let draftPlace, !draftPlace.isDeleted, draftPlace.managedObjectContext != nil {
+                newPlace = draftPlace
+            } else {
+                newPlace = Place(context: viewContext)
+                draftPlace = newPlace
+            }
+            let placeID = newPlace.id ?? UUID()
             newPlace.id = placeID
             newPlace.name = resolvedName
             newPlace.address = address
@@ -3050,9 +3084,9 @@ struct PlaceEditorView: View {
         guard let path, !path.isEmpty else { return }
         if PlaceImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deletePhoto(recordName: path)
-        } else {
-            PlaceImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        PlaceImageStore.deleteImage(at: path)
     }
 }
 

@@ -38,7 +38,7 @@ private struct HomeScreenBackgroundView: View {
                         .resizable()
                         .scaledToFill()
                         .scaleEffect(scale)
-                        .offset(x: offsetX, y: offsetY)
+                        .offset(x: offsetX * proxy.size.width, y: offsetY * proxy.size.height)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
 

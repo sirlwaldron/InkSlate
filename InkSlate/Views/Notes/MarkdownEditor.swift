@@ -180,6 +180,11 @@ struct MarkdownEditor: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: EditorTextView, coordinator: Coordinator) {
+        // The coordinator's debounce is cancelled on deinit; don't lose the last keystrokes if the
+        // editor is torn down before they were published.
+        if coordinator.hasUnpublishedTyping {
+            coordinator.flushPendingEditsToParent()
+        }
         uiView.undoManager?.removeAllActions()
     }
 
@@ -217,6 +222,9 @@ struct MarkdownEditor: UIViewRepresentable {
         }
 
         private var saveWorkItem: DispatchWorkItem?
+        /// True while typed text has not yet been published to `parent.text` (debounce/background
+        /// serialization in flight). Used to flush on teardown so the last keystrokes aren't lost.
+        private(set) var hasUnpublishedTyping = false
         /// Monotonic token guarding background serialization
         private var serializeToken = 0
         private var styleCalculationWorkItem: DispatchWorkItem?
@@ -259,6 +267,8 @@ struct MarkdownEditor: UIViewRepresentable {
             let attributed = deserializeContent(text)
             tv.setAttributedStringForBindingSync(attributed)
             refreshKnownPhotoRecordNames(from: tv.attributedText)
+            // Reloaded content may contain photos that were pending removal; they are back in use.
+            pendingPhotoDeletions.subtract(lastKnownPhotoRecordNames)
             scheduleHydrateNotePhotos()
             lastPublishedSerialized = text
             parent.text = text
@@ -280,9 +290,27 @@ struct MarkdownEditor: UIViewRepresentable {
             serializeToken &+= 1
             let serialized = serializeContent(from: textView.attributedText)
 
+            hasUnpublishedTyping = false
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = textView.selectedRange
+        }
+
+        /// Publishes the live text view into the binding after a toolbar action, undo or redo.
+        /// Cancels the typing debounce and bumps the serialize token so a stale in-flight background
+        /// serialization can't overwrite this newer state, keeps `lastPublishedSerialized` in sync
+        /// (otherwise the editor looks like a remote change), and records a pending user edit only
+        /// if the content actually changed.
+        fileprivate func publishAfterToolbarChange(from tv: UITextView) {
+            saveWorkItem?.cancel()
+            serializeToken &+= 1
+            let serialized = serializeContent(from: tv.attributedText)
+            let changed = serialized != parent.text
+            hasUnpublishedTyping = false
+            lastPublishedSerialized = serialized
+            parent.text = serialized
+            parent.selectedRange = tv.selectedRange
+            if changed { hasPendingUserEdit = true }
         }
         
         // MARK: Serialization
@@ -297,7 +325,7 @@ struct MarkdownEditor: UIViewRepresentable {
             if let tv = textView {
                 column = NotePhotoAttachment.textColumnWidth(for: tv)
             } else {
-                column = max(280, UIScreen.main.bounds.width - 48)
+                column = 320 // no text view yet; same fallback width as NotePhotoAttachment.textColumnWidth
             }
             let availableWidth = max(column, 60)
             if let (attr, _) = MarkdownSerialization.deserialize(text, maxWidth: availableWidth) {
@@ -319,9 +347,11 @@ struct MarkdownEditor: UIViewRepresentable {
                 self.syncRemovedNotePhotosFromCloud(currentAttributed: textView.attributedText)
                 self.serializeToken &+= 1
                 let serialized = self.serializeContent(from: textView.attributedText)
+                self.hasUnpublishedTyping = false
                 self.lastPublishedSerialized = serialized
                 self.parent.text = serialized
             } else {
+                hasUnpublishedTyping = true
 // Debounced typing path: snapshot the attributed string on the main thread (cheap,
                 let item = DispatchWorkItem { [weak self] in
                     guard let self = self, let textView = self.textView else { return }
@@ -333,6 +363,7 @@ struct MarkdownEditor: UIViewRepresentable {
                         let serialized = MarkdownSerialization.serialize(snapshot)
                         DispatchQueue.main.async { [weak self] in
                             guard let self = self, token == self.serializeToken else { return }
+                            self.hasUnpublishedTyping = false
                             self.lastPublishedSerialized = serialized
                             self.parent.text = serialized
                         }
@@ -488,16 +519,17 @@ struct MarkdownEditor: UIViewRepresentable {
                 if let pfx = WysiwygActionHandler.listMarkerPrefixUTF16Length(line) {
                     let lineStart = lineR.location
                     let contentStart = lineStart + pfx
-                    if range.location == contentStart {
+                    // Backspace deletes the character *before* the caret, i.e. the marker's trailing space
+                    // when the caret sits at the start of the item text. Comparing range.location with
+                    // contentStart (as before) never matched that, and instead hijacked forward-delete.
+                    if NSMaxRange(range) == contentStart {
                         var newLine = WysiwygActionHandler.removeListMarkerForToggle(line, bullet: true)
                         if newLine == line {
                             newLine = WysiwygActionHandler.removeListMarkerForToggle(line, bullet: false)
                         }
                         let newStored = newLine + (hadTrailingNewline ? "\n" : "")
                         Self.withUndoGroup(in: tv) {
-                            etv.textStorage.beginEditing()
-                            etv.textStorage.replaceCharacters(in: lineR, with: newStored)
-                            etv.textStorage.endEditing()
+                            WysiwygActionHandler.replaceRegisteringUndo(in: etv, range: lineR, with: newStored)
                             etv.selectedRange = NSRange(location: lineStart, length: 0)
                         }
                         serializeAfterAttributeChange(in: tv)
@@ -651,8 +683,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 let attrs = len == 0 ? tv.typingAttributes : tv.attributedText.attributes(at: idx, effectiveRange: nil)
                 setTypingModesFromAttributes(attrs, in: tv)
                 DispatchQueue.main.async {
-                    self.parent.text = self.serializeContent(from: tv.attributedText)
-                    self.parent.selectedRange = tv.selectedRange
+                    self.publishAfterToolbarChange(from: tv)
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: self,
                                                     userInfo: ["styles": self.currentActiveStyles(in: tv)])
@@ -671,8 +702,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 let attrs = len == 0 ? tv.typingAttributes : tv.attributedText.attributes(at: idx, effectiveRange: nil)
                 setTypingModesFromAttributes(attrs, in: tv)
                 DispatchQueue.main.async {
-                    self.parent.text = self.serializeContent(from: tv.attributedText)
-                    self.parent.selectedRange = tv.selectedRange
+                    self.publishAfterToolbarChange(from: tv)
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: self,
                                                     userInfo: ["styles": self.currentActiveStyles(in: tv)])
@@ -690,8 +720,7 @@ struct MarkdownEditor: UIViewRepresentable {
             defer { isProgrammaticChange = false }
             Self.withUndoGroup(in: tv) { WysiwygActionHandler.apply(action, to: tv, coordinator: self) }
 
-            parent.text = serializeContent(from: tv.attributedText)
-            parent.selectedRange = tv.selectedRange
+            publishAfterToolbarChange(from: tv)
             NotificationCenter.default.post(name: .editorActiveStylesDidChange, object: self,
                                             userInfo: ["styles": currentActiveStyles(in: tv)])
             
@@ -860,6 +889,7 @@ struct MarkdownEditor: UIViewRepresentable {
             serializeToken &+= 1
             let serialized = serializeContent(from: tv.attributedText)
             hasPendingUserEdit = true
+            hasUnpublishedTyping = false
             lastPublishedSerialized = serialized
             parent.text = serialized
             parent.selectedRange = tv.selectedRange
@@ -904,6 +934,14 @@ struct MarkdownEditor: UIViewRepresentable {
             if !pendingPhotoDeletions.isEmpty {
                 pendingPhotoDeletions.subtract(newSet)
             }
+        }
+
+        func allTrackedPhotoRecordNames() -> Set<String> {
+            var names = lastKnownPhotoRecordNames.union(pendingPhotoDeletions)
+            if let tv = textView {
+                names.formUnion(NotePhotoRefCollector.recordNames(in: tv.attributedText))
+            }
+            return names
         }
 
         func commitPendingPhotoDeletions() {
@@ -996,19 +1034,19 @@ struct MarkdownEditor: UIViewRepresentable {
             guard let tv = textView, let noteID = parent.noteCloudKitID else { return }
             guard !parent.notePhotosDisabled else { return }
 
-            let uploadImage: UIImage
-            if let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024),
-               let normalized = UIImage(data: data) {
-                uploadImage = normalized
-            } else {
-                uploadImage = image
-            }
-
             let attachmentID = UUID()
             let recordName = "NotePhoto-\(attachmentID.uuidString)"
 
-            // Keep the photo on-device first so a CloudKit blip never drops it from the note.
-            NotePhotoDiskCache.save(uploadImage, recordName: recordName)
+            // Encode once (off the main thread) and keep the photo on-device first,
+            // so a CloudKit blip never drops it from the note.
+            guard let prepared = await NotePhotoAttachment.prepareAndSave(image, recordName: recordName) else {
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Notes",
+                    detail: "That photo couldn't be prepared. Try a smaller image."
+                )
+                return
+            }
+            let uploadImage = prepared.image
             NotePhotoCloudHydrator.storeInMemoryCache(uploadImage, recordName: recordName)
 
             let column = NotePhotoAttachment.textColumnWidth(for: tv)
@@ -1017,7 +1055,7 @@ struct MarkdownEditor: UIViewRepresentable {
 
             do {
                 _ = try await CloudKitAssetService.shared.uploadNotePhoto(
-                    uploadImage,
+                    jpegData: prepared.jpegData,
                     noteID: noteID,
                     attachmentID: attachmentID
                 )
@@ -1058,10 +1096,6 @@ struct MarkdownEditor: UIViewRepresentable {
             }
             tv.selectedRange = NSRange(location: replaceRange.location + insert.length + 1, length: 0)
             refreshKnownPhotoRecordNames(from: tv.attributedText)
-            NotePhotoCloudHydrator.storeInMemoryCache(image, recordName: recordName)
-            Task.detached(priority: .userInitiated) {
-                NotePhotoDiskCache.save(image, recordName: recordName)
-            }
             serializeAfterAttributeChange(in: tv)
             parent.onPhotoIndexChanged?(NotePhotoRefCollector.jsonIndex(for: tv.attributedText))
             scheduleHydrateNotePhotos()
@@ -1382,77 +1416,6 @@ final class EditorTextView: UITextView {
     }
 }
 
-// MARK: - Word-style multi-level list (•/◦/▪, 1., a), 1) …)
-
-enum WordListLineKind {
-    private static let indentU = 4
-    static func listLevel(leading: String) -> Int { leading.count / indentU }
-    static func leadingPrefix(_ line: String) -> String { String(line.prefix(while: { $0 == " " })) }
-    static func detectBullet(in line: String, _ r: NSRange) -> NSRange? {
-        let m = (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression, range: r)
-        return m.location != NSNotFound ? m : nil
-    }
-    static func detectNumbered(in line: String, _ r: NSRange) -> NSRange? {
-        let n = line as NSString
-        if n.range(of: "^\\s*\\d+\\. ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        if n.range(of: "^\\s*[a-z]\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        if n.range(of: "^\\s*\\d+\\) ", options: .regularExpression, range: r).location != NSNotFound { return r }
-        return nil
-    }
-    static func bulletMark(forLevel l: Int) -> String {
-        if l <= 0 { return "• " }
-        if l == 1 { return "◦ " }
-        return "▪ "
-    }
-    static func nextTopLevelDecimal(before lineIndex: Int, lines: [String]) -> Int {
-        let upper = min(lineIndex - 1, lines.count - 1)
-        guard upper >= 0 else { return 1 }
-        for i in stride(from: upper, through: 0, by: -1) {
-            let raw = lines[i]
-            if raw.first == " " { continue }
-            if let r = raw.range(of: "^\\d+\\. ", options: .regularExpression) {
-                if let n = Int(String(raw[r].dropLast(2))) { return n + 1 }
-            }
-        }
-        return 1
-    }
-    static func relevelLineAfterIndent(_ line: String) -> String? {
-        let sp = leadingPrefix(line)
-        let L = listLevel(leading: sp)
-        if L == 0 { return nil }
-        let c = String(line.dropFirst(sp.count))
-        if let r = c.range(of: "^\\d+\\. ", options: .regularExpression) {
-            if L == 1, Int(String(c[r].dropLast(2))) != nil { return sp + "a) " + String(c[r.upperBound...]) }
-            if L >= 2, Int(String(c[r].dropLast(2))) != nil { return sp + "1) " + String(c[r.upperBound...]) }
-        }
-        if L >= 2, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) { return sp + "1) " + String(c[r.upperBound...]) }
-        if L == 1, c.hasPrefix("• ") { return sp + "◦ " + String(c.dropFirst(2)) }
-        if L == 1, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        if L >= 2, c.hasPrefix("• ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        if L >= 2, c.hasPrefix("◦ ") { return sp + "▪ " + String(c.dropFirst(2)) }
-        return nil
-    }
-    static func relevelLineAfterOutdent(_ line: String, allLines: [String], myIndex: Int) -> String? {
-        let sp = leadingPrefix(line)
-        let c = String(line.dropFirst(sp.count))
-        if sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
-            return "\(nextTopLevelDecimal(before: myIndex, lines: allLines)). " + String(c[r.upperBound...]) }
-        if !sp.isEmpty, let r = c.range(of: "^[a-z]\\) ", options: .regularExpression) {
-            let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
-            if sp.isEmpty { return "\(n). " + String(c[r.upperBound...]) }
-            return sp + "\(n). " + String(c[r.upperBound...]) }
-        if !sp.isEmpty, let r = c.range(of: "^\\d+\\) ", options: .regularExpression) {
-            if sp.isEmpty {
-                let n = nextTopLevelDecimal(before: myIndex, lines: allLines)
-                return "\(n). " + String(c[r.upperBound...]) }
-            return sp + "a) " + String(c[r.upperBound...]) }
-        if sp.isEmpty, c.hasPrefix("◦ ") { return "• " + String(c.dropFirst(2)) }
-        if !sp.isEmpty, c.hasPrefix("◦ ") { return sp + "• " + String(c.dropFirst(2)) }
-        if !sp.isEmpty, c.hasPrefix("▪ ") { return sp + "◦ " + String(c.dropFirst(2)) }
-        return nil
-    }
-}
-
 // MARK: - WYSIWYG Action Handler
 
 class WysiwygActionHandler {
@@ -1507,6 +1470,43 @@ class WysiwygActionHandler {
         }
     }
     
+    // MARK: Undo-aware text replacement
+    // Direct NSTextStorage edits are invisible to UITextView's undo manager, so list toggles, indent,
+    // and Return-on-empty-item/Backspace-at-marker could not be undone (and undo of earlier
+    // typing then applied to shifted text). These helpers perform the same edit and register the inverse.
+
+    static func replaceRegisteringUndo(in tv: UITextView, range: NSRange, with string: String) {
+        let storage = tv.textStorage
+        guard range.location >= 0, NSMaxRange(range) <= storage.length else { return }
+        let old = storage.attributedSubstring(from: range)
+        let selectionBefore = tv.selectedRange
+        storage.replaceCharacters(in: range, with: string)
+        let newRange = NSRange(location: range.location, length: (string as NSString).length)
+        tv.undoManager?.registerUndo(withTarget: tv) { tv in
+            restoreRegisteringUndo(in: tv, range: newRange, with: old, selection: selectionBefore)
+        }
+    }
+
+    private static func restoreRegisteringUndo(
+        in tv: UITextView, range: NSRange, with attributed: NSAttributedString, selection: NSRange
+    ) {
+        let storage = tv.textStorage
+        guard range.location >= 0, NSMaxRange(range) <= storage.length else { return }
+        let current = storage.attributedSubstring(from: range)
+        let selectionNow = tv.selectedRange
+        storage.beginEditing()
+        storage.replaceCharacters(in: range, with: attributed)
+        storage.endEditing()
+        let restoredRange = NSRange(location: range.location, length: attributed.length)
+        // Registering while undoing records the redo; while redoing, it records the undo again.
+        tv.undoManager?.registerUndo(withTarget: tv) { tv in
+            restoreRegisteringUndo(in: tv, range: restoredRange, with: current, selection: selectionNow)
+        }
+        let len = storage.length
+        let loc = min(max(0, selection.location), len)
+        tv.selectedRange = NSRange(location: loc, length: min(selection.length, len - loc))
+    }
+
     static func handleReturn(in textView: EditorTextView) -> Bool {
         let lineR = textView.currentLineRange()
         let ns = textView.attributedText.string as NSString
@@ -1515,13 +1515,25 @@ class WysiwygActionHandler {
         let lead = WordListLineKind.leadingPrefix(line)
         let L = WordListLineKind.listLevel(leading: lead)
         let cAfter = String(line.dropFirst(lead.count))
+        // Caret at the line start or inside the list marker: let the normal newline happen. Inserting
+        // "\n" + a fresh marker there produced a doubled marker ("• • item") on the pushed-down line.
+        let caret = textView.selectedRange
+        if caret.length == 0,
+           let markerMatch = (line as NSString).range(
+               of: #"^\s*([•◦▪] |\d+\. |\d+\) |[a-z]\) )"#, options: .regularExpression
+           ) as NSRange?,
+           markerMatch.location != NSNotFound,
+           caret.location - lineR.location < NSMaxRange(markerMatch) {
+            return false
+        }
         let lineIndex = (allText as NSString).substring(to: min(lineR.location, (allText as NSString).length))
             .filter { $0 == "\n" }.count
         let docLines = (allText as NSString).components(separatedBy: "\n")
         func clearEmptyListLine() {
-            textView.textStorage.beginEditing()
-            textView.textStorage.replaceCharacters(in: lineR, with: "")
-            textView.textStorage.endEditing()
+            // Remove only the list marker; keep the line break so the (now plain) empty line stays
+            // and following paragraphs don't move up.
+            let contentLength = line.hasSuffix("\n") ? lineR.length - 1 : lineR.length
+            replaceRegisteringUndo(in: textView, range: NSRange(location: lineR.location, length: contentLength), with: "")
             textView.selectedRange = NSRange(location: lineR.location, length: 0)
         }
         if (line as NSString).range(of: "^\\s*[•◦▪] ", options: .regularExpression).location != NSNotFound,
@@ -2081,7 +2093,7 @@ class WysiwygActionHandler {
             }
             let newBlock = newLines.joined(separator: "\n")
             guard newBlock != oldBlock else { return }
-            storage.replaceCharacters(in: br, with: newBlock)
+            replaceRegisteringUndo(in: tv, range: br, with: newBlock)
             let newLen = (newBlock as NSString).length
             tv.selectedRange = NSRange(location: br.location, length: newLen)
             return
@@ -2101,7 +2113,7 @@ class WysiwygActionHandler {
         let newStored = newCore + (hadTrailingNewline ? "\n" : "")
         let pOld = listMarkerPrefixUTF16Length(line) ?? 0
         let pNew = listMarkerPrefixUTF16Length(newCore) ?? 0
-        storage.replaceCharacters(in: lineRange, with: newStored)
+        replaceRegisteringUndo(in: tv, range: lineRange, with: newStored)
         let newCursorInLine = newCursorInLineAfterListEdit(
             oldLine: line, newLine: newCore, cursorInLine: cursorInLine, pOld: pOld, pNew: pNew
         )
@@ -2136,7 +2148,7 @@ class WysiwygActionHandler {
             }
             let newBlock = newLines.joined(separator: "\n")
             if newBlock == full.substring(with: br) { return }
-            storage.replaceCharacters(in: br, with: newBlock)
+            replaceRegisteringUndo(in: tv, range: br, with: newBlock)
             tv.selectedRange = NSRange(location: br.location, length: (newBlock as NSString).length)
             return
         }
@@ -2151,7 +2163,7 @@ class WysiwygActionHandler {
         )
         if newLine == line { return }
         let newStored = newLine + (hadTrailing ? "\n" : "")
-        storage.replaceCharacters(in: lineRange, with: newStored)
+        replaceRegisteringUndo(in: tv, range: lineRange, with: newStored)
         let delta = (newLine as NSString).length - (line as NSString).length
         tv.selectedRange = NSRange(
             location: min(max(0, range.location + delta), storage.length), length: 0
@@ -2282,9 +2294,27 @@ class WysiwygActionHandler {
     }
 
 
+    /// "Clear formatting" must not strip inline photos (attachment + photo ref) or links;
+    /// removing those attributes would silently delete the photo from the note.
+    private static func attributesToPreserveWhenClearing(
+        in text: NSAttributedString, range: NSRange
+    ) -> [(range: NSRange, attrs: [NSAttributedString.Key: Any])] {
+        guard text.length > 0, range.length > 0, range.location < text.length else { return [] }
+        let safe = NSRange(location: range.location, length: min(range.length, text.length - range.location))
+        let keys: [NSAttributedString.Key] = [.attachment, .inkSlateNotePhoto, .link]
+        var runs: [(range: NSRange, attrs: [NSAttributedString.Key: Any])] = []
+        text.enumerateAttributes(in: safe, options: []) { attrs, r, _ in
+            var kept: [NSAttributedString.Key: Any] = [:]
+            for key in keys { if let value = attrs[key] { kept[key] = value } }
+            if !kept.isEmpty { runs.append((r, kept)) }
+        }
+        return runs
+    }
+
     private static func removeAllFormatting(in m: NSMutableAttributedString, range: NSRange) {
         let ns = m.string as NSString
         let paraRange = ns.paragraphRange(for: range)
+        let preserved = attributesToPreserveWhenClearing(in: m, range: paraRange)
         
         m.setAttributes([
             .font: EditorTheme.baseFont,
@@ -2297,11 +2327,13 @@ class WysiwygActionHandler {
         style.paragraphSpacing = 0
         style.alignment = .natural
         m.addAttribute(.paragraphStyle, value: style, range: paraRange)
+        for run in preserved { m.addAttributes(run.attrs, range: run.range) }
     }
     
     private static func removeAllFormatting(in storage: NSTextStorage, range: NSRange) {
         let ns = storage.string as NSString
         let paraRange = ns.paragraphRange(for: range)
+        let preserved = attributesToPreserveWhenClearing(in: storage, range: paraRange)
         
         storage.setAttributes([
             .font: EditorTheme.baseFont,
@@ -2314,6 +2346,7 @@ class WysiwygActionHandler {
         style.paragraphSpacing = 0
         style.alignment = .natural
         storage.addAttribute(.paragraphStyle, value: style, range: paraRange)
+        for run in preserved { storage.addAttributes(run.attrs, range: run.range) }
     }
 
 }

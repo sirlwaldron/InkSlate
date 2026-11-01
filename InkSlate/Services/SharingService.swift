@@ -19,7 +19,7 @@ class SharingService: ObservableObject {
     #if canImport(UIKit)
     func shareNote(_ note: Notes, from view: UIViewController) {
         let activityViewController = UIActivityViewController(
-            activityItems: [note.content ?? ""],
+            activityItems: [plainBody(of: note)],
             applicationActivities: nil
         )
         if let popover = activityViewController.popoverPresentationController {
@@ -30,6 +30,12 @@ class SharingService: ObservableObject {
         view.present(activityViewController, animated: true)
     }
     #endif
+
+    /// `Notes.content` is an archived rich-text payload (`⟪ATTR⟫<base64>⟪/ATTR⟫plain text`).
+    /// Exports must use the plain text, otherwise the base64 blob ends up in the shared file.
+    func plainBody(of note: Notes) -> String {
+        MarkdownSerialization.plainText(from: note.content ?? "")
+    }
 
     func exportAsHTML(_ note: Notes) -> String {
         let titleEsc = escapingHTML(note.title ?? "Untitled Note")
@@ -51,7 +57,7 @@ class SharingService: ObservableObject {
         </head>
         <body>
             <h1>\(titleEsc)</h1>
-            \(markdownToHTML(note.content ?? ""))
+            \(markdownToHTML(plainBody(of: note)))
         </body>
         </html>
         """
@@ -60,7 +66,7 @@ class SharingService: ObservableObject {
     }
 
     func exportAsMarkdown(_ note: Notes) -> String {
-        return "# \(note.title ?? "")\n\n\(note.content ?? "")"
+        return "# \(note.title ?? "")\n\n\(plainBody(of: note))"
     }
 
     func exportAsPDF(_ note: Notes) -> Data? {
@@ -69,14 +75,18 @@ class SharingService: ObservableObject {
         let printFormatter = UIMarkupTextPrintFormatter(markupText: html)
         let renderer = UIPrintPageRenderer()
         renderer.addPrintFormatter(printFormatter, startingAtPageAt: 0)
-        let pageSize = CGSize(width: 595, height: 842)
-        let printableRect = CGRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)
-        renderer.setValue(NSValue(cgRect: printableRect), forKey: "paperRect")
+        let paperRect = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let printableRect = paperRect.insetBy(dx: 36, dy: 36)
+        renderer.setValue(NSValue(cgRect: paperRect), forKey: "paperRect")
         renderer.setValue(NSValue(cgRect: printableRect), forKey: "printableRect")
         let pdfData = NSMutableData()
-        UIGraphicsBeginPDFContextToData(pdfData, printableRect, nil)
-        UIGraphicsBeginPDFPage()
-        renderer.drawPage(at: 0, in: UIGraphicsGetPDFContextBounds())
+        UIGraphicsBeginPDFContextToData(pdfData, paperRect, nil)
+        // One PDF page per rendered page; only drawing page 0 used to cut long notes off.
+        let pageCount = max(1, renderer.numberOfPages)
+        for page in 0..<pageCount {
+            UIGraphicsBeginPDFPage()
+            renderer.drawPage(at: page, in: UIGraphicsGetPDFContextBounds())
+        }
         UIGraphicsEndPDFContext()
         return pdfData as Data
         #elseif canImport(AppKit)
@@ -88,19 +98,26 @@ class SharingService: ObservableObject {
                 .characterEncoding: String.Encoding.utf8.rawValue
             ],
             documentAttributes: nil
-        ) ?? NSAttributedString(string: note.content ?? "")
+        ) ?? NSAttributedString(string: plainBody(of: note))
         let pdfData = NSMutableData()
         var mediaBox = CGRect(x: 0, y: 0, width: 595, height: 842)
         guard let consumer = CGDataConsumer(data: pdfData as CFMutableData),
               let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
             return nil
         }
-        context.beginPDFPage(nil)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
         let path = CGPath(rect: mediaBox.insetBy(dx: 36, dy: 36), transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: attributed.length), path, nil)
-        CTFrameDraw(frame, context)
-        context.endPDFPage()
+        // Lay text out page by page; a single frame used to cut long notes off after page one.
+        var location = 0
+        repeat {
+            context.beginPDFPage(nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: location, length: 0), path, nil)
+            CTFrameDraw(frame, context)
+            context.endPDFPage()
+            let visible = CTFrameGetVisibleStringRange(frame)
+            if visible.length == 0 { break }
+            location += visible.length
+        } while location < attributed.length
         context.closePDF()
         return pdfData as Data
         #else
@@ -143,9 +160,9 @@ class SharingService: ObservableObject {
     private func markdownToHTML(_ markdown: String) -> String {
         var html = escapingHTML(markdown)
 
-        html = html.replacingOccurrences(of: "^# (.+)$", with: "<h1>$1</h1>", options: .regularExpression)
-        html = html.replacingOccurrences(of: "^## (.+)$", with: "<h2>$1</h2>", options: .regularExpression)
-        html = html.replacingOccurrences(of: "^### (.+)$", with: "<h3>$1</h3>", options: .regularExpression)
+        html = html.replacingOccurrences(of: "(?m)^# (.+)$", with: "<h1>$1</h1>", options: .regularExpression)
+        html = html.replacingOccurrences(of: "(?m)^## (.+)$", with: "<h2>$1</h2>", options: .regularExpression)
+        html = html.replacingOccurrences(of: "(?m)^### (.+)$", with: "<h3>$1</h3>", options: .regularExpression)
         html = html.replacingOccurrences(of: "\\*\\*(.+?)\\*\\*", with: "<strong>$1</strong>", options: .regularExpression)
         html = html.replacingOccurrences(of: "\\*(.+?)\\*", with: "<em>$1</em>", options: .regularExpression)
         html = html.replacingOccurrences(of: "```([\\s\\S]*?)```", with: "<pre><code>$1</code></pre>", options: .regularExpression)
@@ -243,7 +260,7 @@ struct ExportOptionsView: View {
 
                 VStack(spacing: 16) {
                     Button("Share as Text") {
-                        shareItems = [note.content ?? ""]
+                        shareItems = [SharingService.shared.plainBody(of: note)]
                         showingShareSheet = true
                     }
                     .buttonStyle(.bordered)

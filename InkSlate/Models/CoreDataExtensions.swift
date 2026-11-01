@@ -325,14 +325,30 @@ extension MindMap {
         return title?.isEmpty == false ? title! : "Untitled Mind Map"
     }
     
-    var nodeCount: Int {
-        let roots = rootNodes?.allObjects as? [MindMapNode] ?? []
-        return roots.reduce(0) { $0 + MindMap.countSubtree(root: $1) }
+    /// `rootNodes` really holds every node of the map (child nodes are linked to the map too, so
+    /// search works), and an NSSet has no stable order. The real root is the node without a parent;
+    /// if sync produced several, the oldest one wins so every device picks the same one.
+    var primaryRootNode: MindMapNode? {
+        let all = (rootNodes?.allObjects as? [MindMapNode]) ?? []
+        let roots = all.filter { $0.parent == nil && !$0.isDeleted }
+        return roots.min { a, b in
+            let da = a.createdDate ?? .distantFuture
+            let db = b.createdDate ?? .distantFuture
+            if da != db { return da < db }
+            return (a.id?.uuidString ?? "") < (b.id?.uuidString ?? "")
+        }
     }
 
-    private static func countSubtree(root: MindMapNode) -> Int {
-        let children = root.children?.allObjects as? [MindMapNode] ?? []
-        return 1 + children.reduce(0) { $0 + countSubtree(root: $1) }
+    /// Unique nodes in the map. Every node is in `rootNodes`, so summing per-root subtree counts
+    /// counted each node once per ancestor.
+    var nodeCount: Int {
+        var seen = Set<NSManagedObjectID>()
+        var pending = (rootNodes?.allObjects as? [MindMapNode]) ?? []
+        while let node = pending.popLast() {
+            guard seen.insert(node.objectID).inserted else { continue }
+            pending.append(contentsOf: (node.children?.allObjects as? [MindMapNode]) ?? [])
+        }
+        return seen.count
     }
 }
 

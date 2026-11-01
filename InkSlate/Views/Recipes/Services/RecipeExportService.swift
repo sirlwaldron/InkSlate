@@ -31,10 +31,12 @@ struct RecipeExportService {
             text += "INGREDIENTS:\n"
             text += "\(String(repeating: "-", count: 40))\n"
             for ingredient in ingredients {
-                let amount = ingredient.rawAmountString
-                let unit = ingredient.unit ?? ""
-                let name = ingredient.name ?? ""
-                text += "• \(amount) \(unit) \(name)\n".trimmingCharacters(in: .whitespaces) + "\n"
+                // `.trimmingCharacters(in: .whitespaces)` doesn't strip "\n", so the old code added a blank
+                // line after every ingredient, and empty amount/unit left double spaces.
+                let parts = [ingredient.rawAmountString, ingredient.unit ?? "", ingredient.name ?? ""]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                text += "• " + parts.joined(separator: " ") + "\n"
             }
             text += "\n"
         }
@@ -67,7 +69,7 @@ struct RecipeExportService {
         items.append(exportRecipe(recipe))
         
         if let imagePath = recipe.imageUrl {
-            if let url = RecipeImageStore.fileURL(path: imagePath) {
+            if let url = RecipeImageStore.existingFileURL(path: imagePath) {
                 items.append(url)
             } else if let image = RecipeImageStore.cachedImage(path: imagePath) {
                 items.append(image)

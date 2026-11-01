@@ -66,7 +66,7 @@ struct ModernRecipeMainView: View {
                         .padding(.top, DesignSystem.Spacing.xl)
                     } else {
                         LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: DesignSystem.Spacing.md), count: 3),
+                            columns: [GridItem(.adaptive(minimum: 100), spacing: DesignSystem.Spacing.md)],
                             spacing: DesignSystem.Spacing.xl
                         ) {
                             ForEach(filteredRecipes, id: \.objectID) { recipe in
@@ -296,9 +296,9 @@ struct ModernRecipeMainView: View {
                 guard let imagePath, !imagePath.isEmpty else { return }
                 if RecipeImageStore.isCloudRecordName(imagePath) {
                     try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: imagePath)
-                } else {
-                    RecipeImageStore.deleteImage(at: imagePath)
                 }
+                // Also drop the on-device copy (cache + disk) of a synced photo.
+                RecipeImageStore.deleteImage(at: imagePath)
             }
             fetchFilteredRecipes()
         }
@@ -605,7 +605,6 @@ struct RecipeGridCardRow: View {
 // MARK: - Modern Recipe Grid Card
 struct ModernRecipeGridCard: View {
     @ObservedObject var recipe: Recipe
-    @State private var borderPhase: CGFloat = 0
 
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg, style: .continuous)
@@ -646,7 +645,7 @@ struct ModernRecipeGridCard: View {
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 12, maxHeight: 12, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 12, alignment: .leading)
                     .opacity(cuisineLabel.isEmpty ? 0 : 1)
 
                 Text(recipe.name ?? "Untitled")
@@ -654,7 +653,7 @@ struct ModernRecipeGridCard: View {
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
             }
             .padding(DesignSystem.Spacing.md)
             .frame(maxWidth: .infinity)
@@ -666,11 +665,6 @@ struct ModernRecipeGridCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .clipShape(cardShape)
-        .onAppear {
-            withAnimation(.linear(duration: 4.2).repeatForever(autoreverses: false)) {
-                borderPhase = 1
-            }
-        }
     }
 
     private var titleBorderGradient: LinearGradient {
@@ -680,8 +674,8 @@ struct ModernRecipeGridCard: View {
                 DesignSystem.Colors.accent.opacity(0.12),
                 DesignSystem.Colors.accent.opacity(0.45)
             ],
-            startPoint: UnitPoint(x: borderPhase, y: 0),
-            endPoint: UnitPoint(x: borderPhase + 0.6, y: 1)
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
         )
     }
 
@@ -1082,6 +1076,9 @@ struct ModernAddRecipeView: View {
     @State private var imageRemoved = false
     @State private var isLoadingPickerImage = false
     @State private var isSavingRecipe = false
+    /// New recipe object created by a Save attempt. Kept so that retrying after a failed save reuses it
+    /// instead of inserting a second Recipe (both would then be saved together).
+    @State private var draftRecipe: Recipe?
     @State private var ingredients: [RecipeIngredientData] = []
     @State private var steps: [RecipeStep] = []
     @State private var prepTime = 0
@@ -1173,7 +1170,13 @@ struct ModernAddRecipeView: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        // A failed save leaves the draft inserted but unsaved; don't let it leak into the next save.
+                        if let draftRecipe, draftRecipe.objectID.isTemporaryID, !draftRecipe.isDeleted {
+                            viewContext.delete(draftRecipe)
+                        }
+                        dismiss()
+                    }
                 }
             }
         }
@@ -1526,7 +1529,15 @@ struct ModernAddRecipeView: View {
             await loadPickerImage(from: imageItem)
         }
 
-        let recipe = editingRecipe ?? Recipe(context: viewContext)
+        let recipe: Recipe
+        if let editingRecipe {
+            recipe = editingRecipe
+        } else if let draftRecipe, !draftRecipe.isDeleted, draftRecipe.managedObjectContext != nil {
+            recipe = draftRecipe
+        } else {
+            recipe = Recipe(context: viewContext)
+            draftRecipe = recipe
+        }
         
         if recipe.id == nil {
             recipe.id = UUID()
@@ -1684,9 +1695,9 @@ struct ModernAddRecipeView: View {
         guard let path, !path.isEmpty, path != keepRecordName else { return }
         if RecipeImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: path)
-        } else {
-            RecipeImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        RecipeImageStore.deleteImage(at: path)
     }
 }
 
@@ -2474,6 +2485,10 @@ struct ModernRecipeDetailView: View {
         
         let scale = Double(currentServings) / originalServings
         let scaled = baseAmount * scale
+        // `Int(Double)` traps on NaN/infinite/huge values (e.g. a servings string like "nan").
+        guard scaled.isFinite, abs(scaled) < 1_000_000_000 else {
+            return "\(rawAmount) \(unit) \(name)".trimmingCharacters(in: .whitespaces)
+        }
         let formatted: String
         if scaled.truncatingRemainder(dividingBy: 1) == 0 {
             formatted = String(Int(scaled))
@@ -2567,9 +2582,9 @@ struct ModernRecipeDetailView: View {
         guard let path, !path.isEmpty, path != keepRecordName else { return }
         if RecipeImageStore.isCloudRecordName(path) {
             try? await CloudKitAssetService.shared.deleteRecipePhoto(recordName: path)
-        } else {
-            RecipeImageStore.deleteImage(at: path)
         }
+        // Also drop the on-device copy (cache + disk) of a synced photo.
+        RecipeImageStore.deleteImage(at: path)
     }
 }
 

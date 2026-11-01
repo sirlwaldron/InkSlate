@@ -35,7 +35,8 @@ enum NotePhotoAttachment {
         let inset = textView.textContainerInset
         let pad = textView.textContainer.lineFragmentPadding
         let inner = textView.bounds.width - inset.left - inset.right - 2 * pad
-        let screenCap = max(120, UIScreen.main.bounds.width - 56)
+        let screenWidth = textView.window?.windowScene?.screen.bounds.width ?? max(textView.bounds.width, 390)
+        let screenCap = max(120, screenWidth - 56)
         if inner >= 80 {
             return min(inner, screenCap)
         }
@@ -65,12 +66,21 @@ enum NotePhotoAttachment {
     /// Rounded-rect image for inline display (Apple Notes–like), without changing what we JPEG to disk / CloudKit
     static func displayImageForInlineEditor(_ image: UIImage) -> UIImage {
         guard image.size.width > 12, image.size.height > 12 else { return image }
-        let r = min(14, min(image.size.width, image.size.height) * 0.035)
-        let renderer = UIGraphicsImageRenderer(size: image.size)
+        // Render at scale 1 and cap the long edge. The default renderer format uses the screen scale
+        // (3x), so a 12 MP photo used to become a ~100 MP bitmap (hundreds of MB) per photo.
+        let maxLongEdgePixels: CGFloat = 1800
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        let factor = min(1, maxLongEdgePixels / max(pixelWidth, pixelHeight))
+        let target = CGSize(width: max(1, (pixelWidth * factor).rounded()), height: max(1, (pixelHeight * factor).rounded()))
+        let r = min(40, min(target.width, target.height) * 0.035)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
         return renderer.image { _ in
-            let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: image.size), cornerRadius: r)
+            let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: target), cornerRadius: r)
             path.addClip()
-            image.draw(at: .zero)
+            image.draw(in: CGRect(origin: .zero, size: target))
         }
     }
 
@@ -360,6 +370,13 @@ enum NotePhotoDiskCache {
         try? data.write(to: url, options: [.atomic])
     }
 
+    /// Writes already-encoded JPEG bytes without re-encoding.
+    static func save(data: Data, recordName: String) {
+        let url = fileURL(recordName: recordName)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: [.atomic])
+    }
+
     static func remove(recordName: String) {
         let url = fileURL(recordName: recordName)
         try? FileManager.default.removeItem(at: url)
@@ -369,9 +386,32 @@ enum NotePhotoDiskCache {
     }
 }
 
+#if canImport(UIKit) || canImport(AppKit)
+/// A photo that was encoded once (<= 5 MB JPEG) and written to the on-device cache.
+struct PreparedNotePhoto {
+    let image: PlatformImage
+    let jpegData: Data
+}
+
+extension NotePhotoAttachment {
+    /// Encodes the picked photo to a size-capped JPEG once, off the main thread, and stores it in the
+    /// on-device cache. The same bytes are then used for the in-editor image and the CloudKit upload.
+    static func prepareAndSave(_ image: PlatformImage, recordName: String) async -> PreparedNotePhoto? {
+        await Task.detached(priority: .userInitiated) { () -> PreparedNotePhoto? in
+            guard let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024),
+                  let normalized = PlatformImage(data: data) else { return nil }
+            NotePhotoDiskCache.save(data: data, recordName: recordName)
+            return PreparedNotePhoto(image: normalized, jpegData: data)
+        }.value
+    }
+}
+#endif
+
 /// Tracks note photos that were saved locally but still need a CloudKit upload.
 enum NotePhotoSync {
     private static let defaultsKey = "InkSlate.PendingNotePhotoUploads"
+    /// enqueue/dequeue read-modify-write the same UserDefaults value from different threads.
+    private static let queueLock = NSLock()
 
     private struct PendingItem: Codable, Equatable {
         let recordName: String
@@ -388,6 +428,7 @@ enum NotePhotoSync {
     }
 
     static func enqueuePending(recordName: String, noteID: UUID) {
+        queueLock.lock(); defer { queueLock.unlock() }
         var items = loadPending()
         items.removeAll { $0.recordName == recordName }
         items.append(PendingItem(recordName: recordName, noteID: noteID.uuidString))
@@ -395,6 +436,7 @@ enum NotePhotoSync {
     }
 
     static func dequeuePending(recordName: String) {
+        queueLock.lock(); defer { queueLock.unlock() }
         var items = loadPending()
         items.removeAll { $0.recordName == recordName }
         savePending(items)
@@ -474,7 +516,12 @@ private actor NotePhotoDownloadCoordinator {
 
 /// Loads CloudKit-backed note images into the text view (editor + preview)
 enum NotePhotoCloudHydrator {
-    private static var memoryCache: [String: PlatformImage] = [:]
+    /// NSCache evicts under memory pressure; a plain dictionary of full-size photos never would.
+    private static let memoryCache: NSCache<NSString, PlatformImage> = {
+        let cache = NSCache<NSString, PlatformImage>()
+        cache.countLimit = 40
+        return cache
+    }()
     private static let lock = NSLock()
     /// Text views currently swapping placeholder bitmaps — edits from those must not mark dirty.
     private static let hydratingViews = NSHashTable<AnyObject>.weakObjects()
@@ -507,13 +554,25 @@ enum NotePhotoCloudHydrator {
     static func cachedImage(recordName: String) -> PlatformImage? {
         lock.lock()
         defer { lock.unlock() }
-        return memoryCache[recordName]
+        return memoryCache.object(forKey: recordName as NSString)
+    }
+
+    /// Forgets local copies (memory, disk, pending upload) of photos whose note was permanently deleted.
+    static func discardLocalCopies(recordNames: [String]) {
+        guard !recordNames.isEmpty else { return }
+        lock.lock()
+        for rk in recordNames { memoryCache.removeObject(forKey: rk as NSString) }
+        lock.unlock()
+        for rk in recordNames {
+            NotePhotoDiskCache.remove(recordName: rk)
+            NotePhotoSync.dequeuePending(recordName: rk)
+        }
     }
 
     static func storeInMemoryCache(_ image: PlatformImage, recordName: String) {
         lock.lock()
         defer { lock.unlock() }
-        memoryCache[recordName] = image
+        memoryCache.setObject(image, forKey: recordName as NSString)
     }
 
     static func recordNames(fromImageUrlsJSON json: String?) -> [String] {

@@ -13,7 +13,13 @@ public typealias PlatformImage = NSImage
 
 var platformScreenWidth: CGFloat {
     #if canImport(UIKit)
-    return UIScreen.main.bounds.width
+    // UIScreen.main is deprecated; use the active window scene's screen instead.
+    // Only called from view bodies / UI code, which run on the main actor.
+    return MainActor.assumeIsolated {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.screen.bounds.width ?? 390
+    }
     #elseif canImport(AppKit)
     return NSScreen.main?.visibleFrame.width ?? 800
     #else
@@ -100,12 +106,14 @@ extension UIImage {
         let qualitySteps: [CGFloat] = [0.82, 0.74, 0.66, 0.58, 0.50, 0.42, 0.36]
         let scaleSteps: [CGFloat] = [1.0, 0.85, 0.72, 0.60, 0.50, 0.42, 0.35, 0.28]
         
-        let originalSize = size
+        // JPEG has no alpha: PNGs/screenshots with transparency would otherwise come out on black.
+        let source = inkSlateFlattenedOnWhiteIfNeeded()
+        let originalSize = source.size
         let maxDimensionCap: CGFloat = 3600
         
         for scale in scaleSteps {
             let targetMaxDim = min(maxDimensionCap, max(originalSize.width, originalSize.height) * scale)
-            let resized = Self.inkSlateResize(image: self, maxDimension: targetMaxDim) ?? self
+            let resized = Self.inkSlateResize(image: source, maxDimension: targetMaxDim) ?? source
             
             for q in qualitySteps {
                 guard let data = resized.jpegData(compressionQuality: q) else { continue }
@@ -113,8 +121,27 @@ extension UIImage {
             }
         }
         
-        let tiny = Self.inkSlateResize(image: self, maxDimension: 1600) ?? self
+        let tiny = Self.inkSlateResize(image: source, maxDimension: 1600) ?? source
         return tiny.jpegData(compressionQuality: 0.30).flatMap { $0.count <= maxBytes ? $0 : nil }
+    }
+    
+    /// Composites an image that has an alpha channel onto white; opaque images are returned as is.
+    private func inkSlateFlattenedOnWhiteIfNeeded() -> UIImage {
+        guard let cg = cgImage else { return self }
+        switch cg.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return self
+        default:
+            break
+        }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            draw(at: .zero)
+        }
     }
     
     private static func inkSlateResize(image: UIImage, maxDimension: CGFloat) -> UIImage? {

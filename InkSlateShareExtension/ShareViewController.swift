@@ -75,12 +75,17 @@ final class ShareViewController: UIViewController {
         }
 
         if body == nil {
-            if let saved = await saveFirstImage(from: providers, containerURL: containerURL) {
-                await presentSharePreview(containerURL: containerURL, title: title, items: [saved], richBody: nil)
-                return
+            // Import every shared photo/file (one attachment per provider), not just the first one.
+            var saved: [AttachmentItem] = []
+            for provider in providers {
+                if let image = await saveFirstImage(from: [provider], containerURL: containerURL) {
+                    saved.append(image)
+                } else if let file = await saveFirstFile(from: [provider], containerURL: containerURL) {
+                    saved.append(file)
+                }
             }
-            if let saved = await saveFirstFile(from: providers, containerURL: containerURL) {
-                await presentSharePreview(containerURL: containerURL, title: title, items: [saved], richBody: nil)
+            if !saved.isEmpty {
+                await presentSharePreview(containerURL: containerURL, title: title, items: saved, richBody: nil)
                 return
             }
             finish()
@@ -130,18 +135,19 @@ final class ShareViewController: UIViewController {
     }
 
     private func bodyHasLeadingTitle(_ title: String, in body: String) -> Bool {
+        // Only when the body's FIRST LINE is the title. A bare prefix test stripped e.g. "Apple" off
+        // the front of "Apple pie recipe" whenever the page title happened to be "Apple".
         let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedBody.hasPrefix(title)
+        let firstLine = trimmedBody.components(separatedBy: .newlines).first ?? ""
+        return firstLine.trimmingCharacters(in: .whitespacesAndNewlines) == title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func stripLeadingTitle(_ title: String, from body: String) -> String {
         var remainder = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        if remainder.hasPrefix(title) {
-            remainder.removeFirst(title.count)
-            remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
-            if remainder.hasPrefix("\n") {
-                remainder.removeFirst()
-            }
+        if bodyHasLeadingTitle(title, in: remainder) {
+            var lines = remainder.components(separatedBy: .newlines)
+            lines.removeFirst()
+            remainder = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return remainder
     }
@@ -390,6 +396,8 @@ final class ShareViewController: UIViewController {
                 self.writePayloadAndFinish(containerURL: containerURL, title: finalTitle, content: content, items: finalItems)
             },
             onCancel: { [weak self] in
+                // The shared image/file was already copied into the app group; don't leave it orphaned.
+                self?.removeSavedAttachments(of: items, containerURL: containerURL)
                 self?.finish()
             }
         )
@@ -402,6 +410,13 @@ final class ShareViewController: UIViewController {
         hostingController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         self.view.addSubview(hostingController.view)
         hostingController.didMove(toParent: self)
+    }
+
+    private func removeSavedAttachments(of items: [AttachmentItem], containerURL: URL) {
+        for item in items {
+            guard let relativePath = item.relativePath, relativePath.hasPrefix("\(attachmentsFolderName)/") else { continue }
+            try? FileManager.default.removeItem(at: containerURL.appendingPathComponent(relativePath, isDirectory: false))
+        }
     }
 
     private func archiveRichBody(_ attributed: NSAttributedString, containerURL: URL) throws -> (relativePath: String, filename: String) {
@@ -430,8 +445,9 @@ final class ShareViewController: UIViewController {
             let data = try JSONEncoder().encode(payload)
             try data.write(to: payloadURL, options: [.atomic])
         } catch {
-            print("Failed to save pending import: \(error)")
-            finish()
+            // Don't close silently as if the note was saved: tell the user, and clean up the copied files.
+            removeSavedAttachments(of: finalItems, containerURL: containerURL)
+            presentWriteFailure(error)
             return
         }
 
@@ -480,6 +496,18 @@ final class ShareViewController: UIViewController {
             }
             responder = current.next
         }
+    }
+
+    private func presentWriteFailure(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn't save to InkSlate",
+            message: "The shared content wasn't saved (\(error.localizedDescription)). Please try again.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.finish()
+        })
+        present(alert, animated: true)
     }
 
     private func finish() {

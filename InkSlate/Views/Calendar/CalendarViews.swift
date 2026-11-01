@@ -1004,7 +1004,7 @@ struct EventDetailView: View {
                                 if event.isAllDay {
                                     Text("All day")
                                 } else {
-                                    Text("\(formatDate(event.startDate)) – \(formatDate(event.endDate))")
+                                    Text(timeRangeText)
                                 }
                             }
                             .font(.system(size: 16, weight: .medium))
@@ -1081,8 +1081,9 @@ struct EventDetailView: View {
             .alert("Delete Event", isPresented: $showingDeleteConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Delete", role: .destructive) {
-                    manager.deleteEvent(event)
-                    dismiss()
+                    if manager.deleteEvent(event) {
+                        dismiss()
+                    }
                 }
             } message: {
                 Text("Are you sure you want to delete this event?")
@@ -1095,6 +1096,18 @@ struct EventDetailView: View {
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    /// Includes dates when the event spans more than one day (the time-only text was ambiguous).
+    private var timeRangeText: String {
+        let cal = Calendar.current
+        if cal.isDate(event.startDate, inSameDayAs: event.endDate) {
+            return "\(formatDate(event.startDate)) – \(formatDate(event.endDate))"
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(formatter.string(from: event.startDate)) – \(formatter.string(from: event.endDate))"
     }
 }
 

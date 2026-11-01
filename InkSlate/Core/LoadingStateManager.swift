@@ -123,40 +123,6 @@ extension NSManagedObjectContext {
             try save()
         }
     }
-    
-    
-    func performBatchAsync(_ operation: @escaping () throws -> Void) async throws {
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try operation()
-                    if self.hasChanges {
-                        try self.save()
-                    }
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-    
-    
-    func performBatchWithDebounce(_ operation: @escaping () throws -> Void, debounceTime: TimeInterval = 2.0) {
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + debounceTime) {
-            do {
-                try operation()
-                if self.hasChanges {
-                    try self.save()
-                }
-            } catch {
-                ErrorHandlingService.shared.reportOperationFailure(
-                    module: "CoreData",
-                    detail: "Batch save failed: \(error.localizedDescription)"
-                )
-            }
-        }
-    }
 }
 
 // MARK: - Loading Overlay View Modifier

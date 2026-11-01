@@ -1,6 +1,51 @@
 import CoreData
 import Foundation
 
+// MARK: - Sync ping (throttled)
+
+/// Tells the user's other devices "something changed" through iCloud key-value storage. Every save used
+/// to write the key and force a `synchronize()`; the store throttles/queues rapid writes anyway, so
+/// bursts (typing autosaves, bulk edits) are collapsed: the first ping goes out immediately and later
+/// ones within `minInterval` are merged into one trailing ping, so the final change is always announced.
+enum SyncPing {
+    private static let key = "lastSyncPing"
+    private static let minInterval: TimeInterval = 3
+    private static let lock = NSLock()
+    private static var lastSent: Date = .distantPast
+    private static var trailing: DispatchWorkItem?
+
+    static func send() {
+        lock.lock()
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastSent)
+        if elapsed >= minInterval {
+            lastSent = now
+            trailing?.cancel()
+            trailing = nil
+            lock.unlock()
+            write()
+            return
+        }
+        if trailing == nil {
+            let work = DispatchWorkItem {
+                lock.lock()
+                lastSent = Date()
+                trailing = nil
+                lock.unlock()
+                write()
+            }
+            trailing = work
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + (minInterval - elapsed), execute: work)
+        }
+        lock.unlock()
+    }
+
+    private static func write() {
+        NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: key)
+        NSUbiquitousKeyValueStore.default.synchronize()
+    }
+}
+
 // MARK: - Consistent Core Data save + user-visible errors
 
 enum CoreDataSave {
@@ -20,8 +65,7 @@ enum CoreDataSave {
         }
         do {
             try context.save()
-            NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
-            NSUbiquitousKeyValueStore.default.synchronize()
+            SyncPing.send()
             return true
         } catch {
             ErrorHandlingService.shared.reportSaveFailure(error, module: module, retry: retry)

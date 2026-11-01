@@ -8,10 +8,15 @@ enum NotesEncryptionRemoval {
     private static let enc2Prefix = "⟪ENC2⟫"
     private static let log = Logger(subsystem: "com.lucas.InkSlateNew", category: "NotesEncryptionRemoval")
 
-    private static let recoveryBody = """
+    /// Header placed above the preserved ciphertext. Its presence also marks a note as already handled,
+    /// so every device (each has its own one-time flag) leaves it alone instead of rewriting it again.
+    private static let recoveryHeader = """
     Note locking was removed from InkSlate. This note was previously encrypted, so its contents could not be migrated automatically.
 
-    If you need the original text, restore from an iCloud or device backup created before this update, or open an older version of the app that still had note encryption enabled.
+    If you need the original text, restore from an iCloud or device backup created before this update, or open an older version of the app that still had note encryption enabled. The original encrypted data is kept below, unchanged, so nothing is lost.
+
+    ——— Original encrypted data ———
+
     """
 
     static func migrateIfNeeded(in context: NSManagedObjectContext) {
@@ -48,11 +53,15 @@ enum NotesEncryptionRemoval {
     }
 
     private static func needsMigration(_ note: Notes) -> Bool {
-        if note.isEncrypted { return true }
         let content = note.content ?? ""
+        if content.hasPrefix(recoveryHeader) { return false }  // already handled (possibly on another device)
+        if note.isEncrypted { return true }
         return content.contains(encPrefix) || content.contains(enc2Prefix)
     }
 
+    /// Never destroys the ciphertext: it is kept verbatim under a short explanation, so an older app
+    /// version or a restored backup of the same data can still decrypt it, and nothing irreversible
+    /// is synced to the user's other devices.
     private static func applyRemoval(to note: Notes) {
         let content = note.content ?? ""
         let hadCiphertext = content.contains(encPrefix) || content.contains(enc2Prefix)
@@ -61,9 +70,9 @@ enum NotesEncryptionRemoval {
         note.containerType = "none"
 
         if hadCiphertext {
-            note.content = recoveryBody
-            note.preview = String(recoveryBody.prefix(100))
-        } else if let content = note.content, !content.isEmpty {
+            note.content = recoveryHeader + content
+            note.preview = String(recoveryHeader.prefix(100))
+        } else if !content.isEmpty {
             let plain = MarkdownSerialization.plainText(from: content)
             note.preview = plain.isEmpty ? nil : String(plain.prefix(100))
         } else {

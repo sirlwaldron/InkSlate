@@ -253,6 +253,19 @@ final class RecipeImageStore {
         }.value
     }
     
+    /// URL of the image file only if it exists on disk. Synced photos are stored as `<recordName>.jpg`,
+    /// so `fileURL(path:)` (no extension) pointed at a file that doesn't exist and sharing lost the photo.
+    static func existingFileURL(path: String?) -> URL? {
+        guard let path, !path.isEmpty,
+              !path.hasPrefix("http"), !path.hasPrefix("data:image"),
+              let directoryURL = try? imagesDirectoryURL() else { return nil }
+        let candidates = [
+            diskFileURL(for: path, in: directoryURL),
+            directoryURL.appendingPathComponent(path, isDirectory: false)
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     static func fileURL(path: String?) -> URL? {
         guard let path, !path.isEmpty else { return nil }
         guard !path.hasPrefix("http"), !path.hasPrefix("data:image") else { return nil }

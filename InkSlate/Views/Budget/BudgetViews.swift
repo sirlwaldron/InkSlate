@@ -481,18 +481,9 @@ struct BudgetMainView: View {
         }
     }
 
-    /// True when any known default category is missing one of its factory subcategories
-    /// (e.g. after CloudKit import of categories that were created without defaults).
+    /// True when a default category hasn't had its factory subcategories seeded on this device yet.
     private func categoriesMayNeedDefaultSubcategories(_ categories: [BudgetCategory]) -> Bool {
-        for category in categories {
-            let defaults = BudgetDefaultSubcategories.subcategories(for: category.name ?? "")
-            guard !defaults.isEmpty else { continue }
-            let existing = Set(((category.subcategories as? Set<BudgetSubcategory>) ?? []).compactMap(\.name))
-            if defaults.contains(where: { !existing.contains($0) }) {
-                return true
-            }
-        }
-        return false
+        budgetManager.hasCategoriesNeedingDefaultSubcategories(categories)
     }
 
     private func rebuildSubcategoryCache() {
@@ -2376,10 +2367,10 @@ struct EditSubcategoryView: View {
                             .foregroundColor(DesignSystem.Colors.textInverse)
                             .frame(maxWidth: .infinity)
                             .padding(DesignSystem.Spacing.lg)
-                            .background(name.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.accent)
+                            .background(trimmedName.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.accent)
                             .cornerRadius(DesignSystem.CornerRadius.md)
                     }
-                    .disabled(name.isEmpty)
+                    .disabled(trimmedName.isEmpty)
                     .padding(.horizontal, DesignSystem.Spacing.lg)
                     .padding(.top, DesignSystem.Spacing.lg)
                 }
@@ -2617,9 +2608,13 @@ struct CreateCategoryView: View {
     let icons = ["dollarsign.circle", "house.fill", "car.fill", "cart.fill", "fork.knife", "banknote.fill", "graduationcap.fill", "cross.fill", "gift.fill", "ellipsis.circle.fill"]
     let colors = ["#8B4513", "#2196F3", "#FF9800", "#4CAF50", "#E91E63", "#9C27B0", "#3F51B5", "#F44336", "#FF5722", "#607D8B"]
     
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var isDuplicateName: Bool {
         let request: NSFetchRequest<BudgetCategory> = BudgetCategory.fetchRequest()
-        request.predicate = NSPredicate(format: "name == %@", name)
+        request.predicate = NSPredicate(format: "name ==[c] %@", trimmedName)
         let existingCategories = (try? viewContext.fetch(request)) ?? []
         return !existingCategories.isEmpty
     }
@@ -2728,7 +2723,7 @@ struct CreateCategoryView: View {
                             showingDuplicateAlert = true
                         } else {
                             let _ = budgetManager.createCategory(
-                                name: name,
+                                name: trimmedName,
                                 icon: selectedIcon,
                                 color: selectedColor,
                                 initialBudget: budget,

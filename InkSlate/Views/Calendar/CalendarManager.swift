@@ -3,6 +3,8 @@ import SwiftUI
 import Combine
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 /// Sheet/detail selection wrapper — avoids retroactive `EKEvent: Identifiable` (can trap at launch on newer SDKs).
@@ -21,7 +23,10 @@ func inkEventCalendarColor(for event: EKEvent) -> Color {
     return Color(UIColor(cgColor: cg))
 }
 #else
-func inkEventCalendarColor(for event: EKEvent) -> Color { .blue }
+func inkEventCalendarColor(for event: EKEvent) -> Color {
+    guard let cg = event.calendar.cgColor, let ns = NSColor(cgColor: cg) else { return .blue }
+    return Color(nsColor: ns)
+}
 #endif
 
 // MARK: - Calendar Manager
@@ -221,7 +226,9 @@ final class CalendarManager: ObservableObject {
                 var d = cal.startOfDay(for: event.startDate)
                 while true {
                     let dayEnd = cal.date(byAdding: .day, value: 1, to: d) ?? d
-                    if event.startDate < dayEnd && event.endDate > d {
+                    // `startDate >= d` keeps zero-length events that start exactly at midnight
+                    // (their end is not > d) while still excluding events that merely end at midnight.
+                    if event.startDate < dayEnd && (event.endDate > d || event.startDate >= d) {
                         dict[d, default: []].append(event)
                     }
                     guard event.endDate > dayEnd else { break }
@@ -256,11 +263,19 @@ final class CalendarManager: ObservableObject {
         loadEvents(center: selectedDate)
     }
 
-    func deleteEvent(_ event: EKEvent) {
+    /// Returns false (and tells the user) when EventKit refuses, e.g. a read-only or subscribed calendar.
+    @discardableResult
+    func deleteEvent(_ event: EKEvent) -> Bool {
         do {
             try store.remove(event, span: .thisEvent, commit: true)
             reloadEvents()
+            return true
         } catch {
+            ErrorHandlingService.shared.reportOperationFailure(
+                module: "Calendar",
+                detail: "Couldn't delete the event: \(error.localizedDescription)"
+            )
+            return false
         }
     }
 }

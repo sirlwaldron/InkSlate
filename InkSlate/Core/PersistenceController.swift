@@ -230,6 +230,7 @@ final class PersistenceController: ObservableObject {
             context.automaticallyMergesChangesFromParent = true
             NotesEncryptionRemoval.migrateIfNeeded(in: context)
             self.purgeTrashedNotesOlderThan30Days(in: context)
+            self.retryPendingCloudAssetCleanups()
             if context.hasChanges {
                 try? context.save()
             }
@@ -239,42 +240,78 @@ final class PersistenceController: ObservableObject {
 
     func purgeTrashedNotesOlderThan30Days(in context: NSManagedObjectContext) {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
-        let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "Notes")
         let deletedPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate != nil AND deletedDate < %@", cutoff as NSDate)
         let legacyPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate == nil AND modifiedDate < %@", cutoff as NSDate)
-        fetchRequest.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
+        let predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
 
-        // Collect note IDs before batch delete so CloudKit photo/attachment cleanup can still run.
-        let idFetch = NSFetchRequest<Notes>(entityName: "Notes")
-        idFetch.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
-        idFetch.propertiesToFetch = ["id"]
-        let doomedIDs: [UUID] = ((try? context.fetch(idFetch)) ?? []).compactMap { $0.id }
-
-        let batchDelete = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-        batchDelete.resultType = .resultTypeObjectIDs
         do {
-            let result = try context.execute(batchDelete) as? NSBatchDeleteResult
-            let objectIDArray = result?.result as? [NSManagedObjectID]
-            let changes = [NSDeletedObjectsKey: objectIDArray ?? []]
-            NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [context])
-
-// Clean up orphaned CloudKit assets for the purged notes (photos + share-import
-            for uid in doomedIDs {
-                Task {
-                    #if canImport(UIKit)
-                    try? await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
-                    #endif
-                    try? await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
-                }
-            }
-            let viewContext = container.viewContext
-            if context !== viewContext {
-                viewContext.perform {
-                    NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [viewContext])
-                }
-            }
+            let doomedIDs = try deleteNotes(matching: predicate, in: context)
+            cleanUpCloudAssets(forNoteIDs: doomedIDs)
         } catch {
             logger.error("Purge trashed notes failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deletes the notes matching `predicate` one object at a time and saves. Unlike
+    /// `NSBatchDeleteRequest`, per-object deletes go through the normal save path, so CloudKit
+    /// mirroring is guaranteed to record each deletion and `viewContext` picks the changes up
+    /// through `automaticallyMergesChangesFromParent`. Must be called on `context`'s queue.
+    /// Returns the `id`s of the deleted notes; they are only returned after a successful save.
+    func deleteNotes(matching predicate: NSPredicate, in context: NSManagedObjectContext) throws -> [UUID] {
+        let fetch = NSFetchRequest<Notes>(entityName: "Notes")
+        fetch.predicate = predicate
+        let notes = try context.fetch(fetch)
+        guard !notes.isEmpty else { return [] }
+        let ids = notes.compactMap { $0.id }
+        // Remember inline photo record names now; the notes are gone after the save.
+        let photoRecordNames = notes.flatMap { NotePhotoRefCollector.recordNames(fromImageUrlsJSON: $0.imageUrls) }
+        notes.forEach(context.delete)
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+        NotePhotoCloudHydrator.discardLocalCopies(recordNames: photoRecordNames)
+        return ids
+    }
+
+    /// Removes CloudKit photos/attachments belonging to notes that were permanently deleted.
+    /// The note IDs are remembered until cleanup succeeds, so an offline or failed attempt is
+    /// retried on later launches (see `retryPendingCloudAssetCleanups`) instead of leaving orphans.
+    func cleanUpCloudAssets(forNoteIDs ids: [UUID]) {
+        guard !ids.isEmpty else { return }
+        PendingAssetCleanupQueue.add(ids)
+        runCloudAssetCleanup(for: ids)
+    }
+
+    /// Retries cleanups that failed earlier (bounded number of attempts per note).
+    func retryPendingCloudAssetCleanups() {
+        let ids = PendingAssetCleanupQueue.pendingIDs()
+        guard !ids.isEmpty else { return }
+        runCloudAssetCleanup(for: ids)
+    }
+
+    private func runCloudAssetCleanup(for ids: [UUID]) {
+        let logger = self.logger
+        Task {
+            for uid in ids {
+                guard PendingAssetCleanupQueue.beginRun(uid) else { continue }
+                var succeeded = true
+                do {
+                    try await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
+                } catch {
+                    succeeded = false
+                    logger.error("Photo cleanup failed for deleted note \(uid.uuidString): \(error.localizedDescription)")
+                }
+                do {
+                    try await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
+                } catch {
+                    succeeded = false
+                    logger.error("Attachment cleanup failed for deleted note \(uid.uuidString): \(error.localizedDescription)")
+                }
+                PendingAssetCleanupQueue.endRun(uid, succeeded: succeeded)
+            }
         }
     }
 
@@ -343,8 +380,7 @@ final class PersistenceController: ObservableObject {
     }
 
     func pingSyncToPeers() {
-        NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
-        NSUbiquitousKeyValueStore.default.synchronize()
+        SyncPing.send()
     }
 
     /// Dummy write on a background context to nudge NSPersistentCloudKitContainer when push delivery is unreliable.
@@ -487,10 +523,6 @@ final class PersistenceController: ObservableObject {
                 }
             }
 
-            if mergedEntries {
-                chosen.recomputeStreaks(in: context)
-            }
-
             if context.hasChanges {
                 do {
                     try context.save()
@@ -499,6 +531,11 @@ final class PersistenceController: ObservableObject {
                     context.rollback()
                     return
                 }
+            }
+            // Recompute only after the merge is saved: the streak query reads saved rows,
+            // so before the save it still saw the moved entries under the deleted duplicate book.
+            if mergedEntries {
+                chosen.recomputeStreaks(in: context)
             }
             if let chosenID = chosen.id?.uuidString {
                 UserDefaults.standard.set(chosenID, forKey: key)
@@ -704,3 +741,59 @@ extension Notification.Name {
     static let dataSaved = Notification.Name("dataSaved")
 }
 
+// MARK: - Pending CloudKit asset cleanup
+
+/// Note IDs whose CloudKit photo/attachment cleanup has not succeeded yet.
+/// Stored as `[noteUUID: failedAttempts]` in UserDefaults; entries are dropped after `maxAttempts` failures.
+private enum PendingAssetCleanupQueue {
+    private static let key = "InkSlate.PendingNoteAssetCleanups"
+    private static let maxAttempts = 5
+    private static let lock = NSLock()
+    private static var running = Set<UUID>()
+
+    private static func load() -> [String: Int] {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
+    }
+
+    private static func save(_ items: [String: Int]) {
+        if items.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(items, forKey: key)
+        }
+    }
+
+    static func add(_ ids: [UUID]) {
+        lock.lock(); defer { lock.unlock() }
+        var items = load()
+        for id in ids where items[id.uuidString] == nil { items[id.uuidString] = 0 }
+        save(items)
+    }
+
+    static func pendingIDs() -> [UUID] {
+        lock.lock(); defer { lock.unlock() }
+        return load().keys.compactMap(UUID.init(uuidString:))
+    }
+
+    /// Returns false when a cleanup for this note is already running.
+    static func beginRun(_ id: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return running.insert(id).inserted
+    }
+
+    static func endRun(_ id: UUID, succeeded: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        running.remove(id)
+        var items = load()
+        if succeeded {
+            items.removeValue(forKey: id.uuidString)
+        } else if let attempts = items[id.uuidString] {
+            if attempts + 1 >= maxAttempts {
+                items.removeValue(forKey: id.uuidString)
+            } else {
+                items[id.uuidString] = attempts + 1
+            }
+        }
+        save(items)
+    }
+}

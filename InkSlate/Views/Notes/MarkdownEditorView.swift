@@ -90,9 +90,24 @@ private struct MarkdownPreviewTextView: UIViewRepresentable {
         return textView
     }
 
+    /// Remembers what is currently shown so unrelated SwiftUI updates don't re-deserialize and re-layout the note.
+    final class Coordinator {
+        var lastContent: String?
+        var lastColumn: CGFloat = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func updateUIView(_ uiView: UITextView, context: Context) {
         let column = max(60, preferredColumnWidth)
         let width = max(column, 60)
+        if context.coordinator.lastContent == content, context.coordinator.lastColumn == column {
+            // Same text and width: keep the existing attributed text; just let pending photos hydrate.
+            NotePhotoCloudHydrator.hydrate(textView: uiView, overrideColumnWidth: column)
+            return
+        }
+        context.coordinator.lastContent = content
+        context.coordinator.lastColumn = column
         if let (attributed, _) = MarkdownSerialization.deserialize(content, maxWidth: width) {
             let m = NSMutableAttributedString(attributedString: attributed)
             NotePhotoAttachment.repairAttachmentBounds(in: m, columnWidth: column)

@@ -560,6 +560,9 @@ struct ModernAddQuoteView: View {
         
         if viewContext.inkSlateSave(module: "Quotes", retry: { saveQuote() }) {
             dismiss()
+        } else if !newQuote.isDeleted {
+            // The retry action calls saveQuote() again (inserting a new Quote); drop this unsaved copy.
+            viewContext.delete(newQuote)
         }
     }
 }
