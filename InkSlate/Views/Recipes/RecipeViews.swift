@@ -1076,6 +1076,9 @@ struct ModernAddRecipeView: View {
     @State private var imageRemoved = false
     @State private var isLoadingPickerImage = false
     @State private var isSavingRecipe = false
+    /// New recipe object created by a Save attempt. Kept so that retrying after a failed save reuses it
+    /// instead of inserting a second Recipe (both would then be saved together).
+    @State private var draftRecipe: Recipe?
     @State private var ingredients: [RecipeIngredientData] = []
     @State private var steps: [RecipeStep] = []
     @State private var prepTime = 0
@@ -1167,7 +1170,13 @@ struct ModernAddRecipeView: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        // A failed save leaves the draft inserted but unsaved; don't let it leak into the next save.
+                        if let draftRecipe, draftRecipe.objectID.isTemporaryID, !draftRecipe.isDeleted {
+                            viewContext.delete(draftRecipe)
+                        }
+                        dismiss()
+                    }
                 }
             }
         }
@@ -1520,7 +1529,15 @@ struct ModernAddRecipeView: View {
             await loadPickerImage(from: imageItem)
         }
 
-        let recipe = editingRecipe ?? Recipe(context: viewContext)
+        let recipe: Recipe
+        if let editingRecipe {
+            recipe = editingRecipe
+        } else if let draftRecipe, !draftRecipe.isDeleted, draftRecipe.managedObjectContext != nil {
+            recipe = draftRecipe
+        } else {
+            recipe = Recipe(context: viewContext)
+            draftRecipe = recipe
+        }
         
         if recipe.id == nil {
             recipe.id = UUID()
