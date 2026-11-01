@@ -1,5 +1,7 @@
 DEFINE SCHEMA
 
+    // NOTE: documentation only. Private-database records are only visible to their owner, so the
+    // security grants below are the standard creator-only set (the old "_world" read grant had no use).
     // NOTE:
     // This file captures InkSlate's custom CloudKit record types added in code.
     // Core Data mirrored types (CD_*) are managed by CloudKit/CoreData mirroring and should be exported
@@ -19,6 +21,53 @@ DEFINE SCHEMA
         kind            STRING QUERYABLE SEARCHABLE SORTABLE,
         GRANT WRITE TO "_creator",
         GRANT CREATE TO "_icloud",
-        GRANT READ TO "_world"
+        GRANT READ TO "_creator"
     );
 
+    // Written by CloudKitAssetService (NotePhoto-{uuid} record names). `noteID` is queried to find/delete a
+    // parent's photos, so it must be QUERYABLE in production.
+    RECORD TYPE NotePhoto (
+        "___createTime" TIMESTAMP,
+        "___createdBy"  REFERENCE,
+        "___etag"       STRING,
+        "___modTime"    TIMESTAMP,
+        "___modifiedBy" REFERENCE,
+        "___recordID"   REFERENCE,
+        photo           ASSET,
+        noteID          STRING QUERYABLE SEARCHABLE SORTABLE,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_creator"
+    );
+
+    // Written by CloudKitAssetService (PlacePhoto-{uuid} record names). `placeID` is queried to find/delete a
+    // parent's photos, so it must be QUERYABLE in production.
+    RECORD TYPE PlacePhoto (
+        "___createTime" TIMESTAMP,
+        "___createdBy"  REFERENCE,
+        "___etag"       STRING,
+        "___modTime"    TIMESTAMP,
+        "___modifiedBy" REFERENCE,
+        "___recordID"   REFERENCE,
+        photo           ASSET,
+        placeID         STRING QUERYABLE SEARCHABLE SORTABLE,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_creator"
+    );
+
+    // Written by CloudKitAssetService (RecipePhoto-{uuid} record names). `recipeID` is queried to find/delete a
+    // parent's photos, so it must be QUERYABLE in production.
+    RECORD TYPE RecipePhoto (
+        "___createTime" TIMESTAMP,
+        "___createdBy"  REFERENCE,
+        "___etag"       STRING,
+        "___modTime"    TIMESTAMP,
+        "___modifiedBy" REFERENCE,
+        "___recordID"   REFERENCE,
+        photo           ASSET,
+        recipeID        STRING QUERYABLE SEARCHABLE SORTABLE,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_creator"
+    );

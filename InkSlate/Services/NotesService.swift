@@ -1,5 +1,4 @@
 import Foundation
-import Foundation
 
 // MARK: - Enums
 enum SortBy: String, CaseIterable {
