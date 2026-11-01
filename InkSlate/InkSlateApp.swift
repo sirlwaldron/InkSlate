@@ -24,6 +24,8 @@ struct InkSlateApp: App {
     #if os(macOS)
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     #endif
+    /// The root view is rebuilt when the appearance changes, so one-time launch work is guarded.
+    @State private var didRunLaunchWork = false
 
     init() {
         PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "AppInitialization") {
@@ -52,11 +54,13 @@ struct InkSlateApp: App {
                         .environmentObject(subscriptionService)
                         .preferredColorScheme(themeService.isDarkMode ? .dark : .light)
                         .tint(themeService.accentColor)
-                        .id("\(themeService.appearanceVersion)-\(subscriptionService.isPro)")
+                        .id(themeService.appearanceVersion)
                         .onOpenURL { url in
                             SharedImportManager.handleIncomingURL(url, in: persistenceController.container.viewContext)
                         }
                         .onAppear {
+                            guard !didRunLaunchWork else { return }
+                            didRunLaunchWork = true
                             PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "ContentViewOnAppear") {
                                 performCleanup()
                                 #if os(iOS)
@@ -189,8 +193,11 @@ struct InkSlateApp: App {
     }
 
     #if os(macOS)
+    private static var macCleanupTimer: Timer?
+
     private func scheduleMacPeriodicCleanup() {
-        Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
+        Self.macCleanupTimer?.invalidate()
+        Self.macCleanupTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
             Task { @MainActor in
                 PersistenceController.shared.performBackgroundMaintenance()
             }
