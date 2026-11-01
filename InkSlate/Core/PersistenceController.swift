@@ -524,10 +524,6 @@ final class PersistenceController: ObservableObject {
                 }
             }
 
-            if mergedEntries {
-                chosen.recomputeStreaks(in: context)
-            }
-
             if context.hasChanges {
                 do {
                     try context.save()
@@ -536,6 +532,11 @@ final class PersistenceController: ObservableObject {
                     context.rollback()
                     return
                 }
+            }
+            // Recompute only after the merge is saved: the streak query reads saved rows,
+            // so before the save it still saw the moved entries under the deleted duplicate book.
+            if mergedEntries {
+                chosen.recomputeStreaks(in: context)
             }
             if let chosenID = chosen.id?.uuidString {
                 UserDefaults.standard.set(chosenID, forKey: key)

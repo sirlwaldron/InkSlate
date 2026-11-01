@@ -451,7 +451,13 @@ struct EntriesListView: View {
         entry.id = UUID()
         entry.book = book
         viewContext.insert(entry)
-        withAnimation(.spring) { _ = viewContext.inkSlateSave(module: "Journal") }
+        var saved = false
+        withAnimation(.spring) { saved = viewContext.inkSlateSave(module: "Journal") }
+        guard saved else {
+            // Keep what the user typed; drop the unsaved copy so a retry doesn't create a duplicate.
+            viewContext.delete(entry)
+            return
+        }
 
         if book.isDailyJournal {
             book.updateStreak(for: entryDate)
@@ -541,10 +547,12 @@ private struct EntriesResultsSection: View {
     private func delete(_ entry: JournalEntry) {
         withAnimation {
             viewContext.delete(entry)
-            if book.isDailyJournal {
+            // Save the deletion first: the streak query reads saved rows, so recomputing before the
+            // save still counted the entry that was just deleted.
+            let saved = viewContext.inkSlateSave(module: "Journal")
+            if saved, book.isDailyJournal {
                 book.recomputeStreaks(in: viewContext)
             }
-            _ = viewContext.inkSlateSave(module: "Journal")
             lightHaptic()
         }
     }
@@ -844,7 +852,11 @@ struct NewEntryView: View {
         entry.id = UUID()
         entry.book = book
         viewContext.insert(entry)
-        _ = viewContext.inkSlateSave(module: "Journal")
+        guard viewContext.inkSlateSave(module: "Journal") else {
+            // Stay on the form so the text isn't lost; drop the unsaved copy so a retry doesn't duplicate it.
+            viewContext.delete(entry)
+            return
+        }
 
         if book.isDailyJournal {
             book.updateStreak(for: date)
@@ -933,6 +945,12 @@ struct EditEntryView: View {
     }
     
     private func saveEntry() {
+        // The entry may have been deleted on another device while this screen was open;
+        // mutating a removed managed object raises an exception.
+        guard entry.managedObjectContext != nil, !entry.isDeleted else {
+            dismiss()
+            return
+        }
         entry.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title
         entry.content = text
         entry.modifiedDate = Date()
