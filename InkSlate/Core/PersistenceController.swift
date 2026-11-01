@@ -380,8 +380,7 @@ final class PersistenceController: ObservableObject {
     }
 
     func pingSyncToPeers() {
-        NSUbiquitousKeyValueStore.default.set(Date().timeIntervalSince1970, forKey: "lastSyncPing")
-        NSUbiquitousKeyValueStore.default.synchronize()
+        SyncPing.send()
     }
 
     /// Dummy write on a background context to nudge NSPersistentCloudKitContainer when push delivery is unreliable.
