@@ -48,7 +48,8 @@ struct NotesListView: View {
     @State private var errorMessage = ""
     @State private var isLoading = false
 
-    @State private var filteredNoteIDs: [NSManagedObjectID] = []
+    /// Notes resolved once per background refresh, so body never has to do per-render Core Data lookups.
+    @State private var resolvedNotes: [Notes] = []
     @State private var didLoadNoteList = false
     @State private var filterGeneration = 0
     @State private var refreshWorkItem: DispatchWorkItem?
@@ -265,6 +266,16 @@ private struct NotesListLifecycleModifier: ViewModifier {
     let onRefresh: () -> Void
     let onScheduleRefresh: (TimeInterval) -> Void
 
+    private static func changeAffectsNotesList(_ notification: Notification) -> Bool {
+        let keys = [NSInsertedObjectsKey, NSUpdatedObjectsKey, NSDeletedObjectsKey, NSRefreshedObjectsKey, NSInvalidatedObjectsKey]
+        for key in keys {
+            guard let objects = notification.userInfo?[key] as? Set<NSManagedObject> else { continue }
+            if objects.contains(where: { $0 is Notes || $0 is FSProject }) { return true }
+        }
+        // Invalidate-all / reset notifications carry no object sets.
+        return notification.userInfo?[NSInvalidatedAllObjectsKey] != nil
+    }
+
     func body(content: Content) -> some View {
         content
             .onAppear {
@@ -288,8 +299,12 @@ private struct NotesListLifecycleModifier: ViewModifier {
             .onChange(of: sortBy) { _, _ in onRefresh() }
             .onChange(of: sortDirection) { _, _ in onRefresh() }
             .onChange(of: searchDebouncer.debouncedText) { _, _ in onRefresh() }
-            .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextDidSave, object: viewContext)) { _ in
-                onScheduleRefresh(0.35)
+            // ObjectsDidChange also fires for changes merged in from background contexts and CloudKit
+            // imports (DidSave on viewContext only covers the view context's own saves).
+            .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextObjectsDidChange, object: viewContext)) { notification in
+                if Self.changeAffectsNotesList(notification) {
+                    onScheduleRefresh(0.35)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .cloudKitDataRefreshed)) { _ in
                 onScheduleRefresh(0.35)
@@ -919,47 +934,29 @@ extension NotesListView {
         }
         let noteUUID = note.id
         viewContext.delete(note)
-        if let noteUUID {
-            Task {
-                try? await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: noteUUID)
-                try? await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: noteUUID)
+        if viewContext.inkSlateSave(module: "Notes") {
+            // Only remove CloudKit assets once the note is really gone.
+            if let noteUUID {
+                PersistenceController.shared.cleanUpCloudAssets(forNoteIDs: [noteUUID])
             }
+        } else {
+            errorMessage = "Failed to permanently delete note."
+            showingError = true
         }
-        saveOrAlert("Failed to permanently delete note")
     }
 
     private func emptyTrash() {
         withAnimation(.easeInOut) { isLoading = true }
-        let bg = PersistenceController.shared.backgroundContext()
+        let persistence = PersistenceController.shared
+        let bg = persistence.backgroundContext()
         bg.perform {
-            let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "Notes")
-            fetchRequest.predicate = NSPredicate(format: "isMarkedDeleted == YES")
-
-            let idFetch = NSFetchRequest<Notes>(entityName: "Notes")
-            idFetch.predicate = NSPredicate(format: "isMarkedDeleted == YES")
-            idFetch.propertiesToFetch = ["id"]
-            let doomedIDs: [UUID]
             do {
-                doomedIDs = try bg.fetch(idFetch).compactMap { $0.id }
-            } catch {
-                doomedIDs = []
-            }
-            
-            let batchDelete = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-            batchDelete.resultType = .resultTypeObjectIDs
-            
-            do {
-                let result = try bg.execute(batchDelete) as? NSBatchDeleteResult
-                let objectIDs = (result?.result as? [NSManagedObjectID]) ?? []
-                for uid in doomedIDs {
-                    Task {
-                        try? await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
-                        try? await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
-                    }
-                }
+                let doomedIDs = try persistence.deleteNotes(
+                    matching: NSPredicate(format: "isMarkedDeleted == YES"),
+                    in: bg
+                )
+                persistence.cleanUpCloudAssets(forNoteIDs: doomedIDs)
                 DispatchQueue.main.async {
-                    let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: objectIDs]
-                    NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [viewContext])
                     selectedNote = nil
                     withAnimation(.easeInOut) { isLoading = false }
                 }
@@ -983,39 +980,20 @@ extension NotesListView {
     }
 
     private func purgeOldDeletedNotes() {
-        let bg = PersistenceController.shared.backgroundContext()
+        let persistence = PersistenceController.shared
+        let bg = persistence.backgroundContext()
         bg.perform {
-            let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "Notes")
             let cutoffDate = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
             let deletedPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate != nil AND deletedDate < %@", cutoffDate as NSDate)
             let legacyPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate == nil AND modifiedDate < %@", cutoffDate as NSDate)
-            fetchRequest.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
-
-            let idFetch = NSFetchRequest<Notes>(entityName: "Notes")
-            idFetch.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
-            idFetch.propertiesToFetch = ["id"]
-            let doomedIDs: [UUID]
             do {
-                doomedIDs = try bg.fetch(idFetch).compactMap { $0.id }
-            } catch {
-                doomedIDs = []
-            }
-            
-            let batchDelete = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-            batchDelete.resultType = .resultTypeObjectIDs
-            
-            do {
-                let result = try bg.execute(batchDelete) as? NSBatchDeleteResult
-                let objectIDs = (result?.result as? [NSManagedObjectID]) ?? []
-                for uid in doomedIDs {
-                    Task {
-                        try? await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
-                        try? await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
-                    }
-                }
+                let doomedIDs = try persistence.deleteNotes(
+                    matching: NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred]),
+                    in: bg
+                )
+                persistence.cleanUpCloudAssets(forNoteIDs: doomedIDs)
+                guard !doomedIDs.isEmpty else { return }
                 DispatchQueue.main.async {
-                    let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: objectIDs]
-                    NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [viewContext])
                     clearSelectedNoteIfPurgedOrInvalid()
                 }
             } catch {
@@ -1047,10 +1025,9 @@ extension NotesListView {
         }
     }
     
+    /// Cheap per-render filter: drops notes deleted since the last refresh instead of fetching again.
     private var filteredNotes: [Notes] {
-        filteredNoteIDs.compactMap { id in
-            (try? viewContext.existingObject(with: id)) as? Notes
-        }
+        resolvedNotes.filter { !$0.isDeleted && $0.managedObjectContext != nil }
     }
     
     private var rowDisplaySettings: (showCreated: Bool, showModified: Bool, showPreview: Bool, showTags: Bool) {
@@ -1178,8 +1155,11 @@ extension NotesListView {
                 guard generation == filterGeneration else { return }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
+                let resolved = ids.compactMap { id in
+                    (try? viewContext.existingObject(with: id)) as? Notes
+                }
                 withTransaction(transaction) {
-                    filteredNoteIDs = ids
+                    resolvedNotes = resolved
                     didLoadNoteList = true
                 }
             }

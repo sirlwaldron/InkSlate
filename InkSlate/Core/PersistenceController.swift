@@ -239,42 +239,57 @@ final class PersistenceController: ObservableObject {
 
     func purgeTrashedNotesOlderThan30Days(in context: NSManagedObjectContext) {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
-        let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "Notes")
         let deletedPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate != nil AND deletedDate < %@", cutoff as NSDate)
         let legacyPred = NSPredicate(format: "isMarkedDeleted == YES AND deletedDate == nil AND modifiedDate < %@", cutoff as NSDate)
-        fetchRequest.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
+        let predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
 
-        // Collect note IDs before batch delete so CloudKit photo/attachment cleanup can still run.
-        let idFetch = NSFetchRequest<Notes>(entityName: "Notes")
-        idFetch.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [deletedPred, legacyPred])
-        idFetch.propertiesToFetch = ["id"]
-        let doomedIDs: [UUID] = ((try? context.fetch(idFetch)) ?? []).compactMap { $0.id }
-
-        let batchDelete = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-        batchDelete.resultType = .resultTypeObjectIDs
         do {
-            let result = try context.execute(batchDelete) as? NSBatchDeleteResult
-            let objectIDArray = result?.result as? [NSManagedObjectID]
-            let changes = [NSDeletedObjectsKey: objectIDArray ?? []]
-            NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [context])
-
-// Clean up orphaned CloudKit assets for the purged notes (photos + share-import
-            for uid in doomedIDs {
-                Task {
-                    #if canImport(UIKit)
-                    try? await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
-                    #endif
-                    try? await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
-                }
-            }
-            let viewContext = container.viewContext
-            if context !== viewContext {
-                viewContext.perform {
-                    NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [viewContext])
-                }
-            }
+            let doomedIDs = try deleteNotes(matching: predicate, in: context)
+            cleanUpCloudAssets(forNoteIDs: doomedIDs)
         } catch {
             logger.error("Purge trashed notes failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deletes the notes matching `predicate` one object at a time and saves. Unlike
+    /// `NSBatchDeleteRequest`, per-object deletes go through the normal save path, so CloudKit
+    /// mirroring is guaranteed to record each deletion and `viewContext` picks the changes up
+    /// through `automaticallyMergesChangesFromParent`. Must be called on `context`'s queue.
+    /// Returns the `id`s of the deleted notes; they are only returned after a successful save.
+    func deleteNotes(matching predicate: NSPredicate, in context: NSManagedObjectContext) throws -> [UUID] {
+        let fetch = NSFetchRequest<Notes>(entityName: "Notes")
+        fetch.predicate = predicate
+        let notes = try context.fetch(fetch)
+        guard !notes.isEmpty else { return [] }
+        let ids = notes.compactMap { $0.id }
+        notes.forEach(context.delete)
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+        return ids
+    }
+
+    /// Removes CloudKit photos/attachments belonging to notes that were permanently deleted.
+    /// Failures are logged (they leave orphaned assets but must not block the delete itself).
+    func cleanUpCloudAssets(forNoteIDs ids: [UUID]) {
+        guard !ids.isEmpty else { return }
+        let logger = self.logger
+        Task {
+            for uid in ids {
+                do {
+                    try await CloudKitAssetService.shared.deleteNotePhotosForNote(noteID: uid)
+                } catch {
+                    logger.error("Photo cleanup failed for deleted note \(uid.uuidString): \(error.localizedDescription)")
+                }
+                do {
+                    try await CloudKitAssetService.shared.deleteNoteAttachmentsForNote(noteID: uid)
+                } catch {
+                    logger.error("Attachment cleanup failed for deleted note \(uid.uuidString): \(error.localizedDescription)")
+                }
+            }
         }
     }
 
