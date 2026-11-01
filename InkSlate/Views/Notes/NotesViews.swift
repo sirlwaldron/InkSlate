@@ -1809,6 +1809,7 @@ struct TextEditorView: View {
     @State private var errorMessage = ""
 
     @State private var hasUnsavedChanges = false
+    @State private var photoDeletionsSafeToCommit = false
     @State private var autoSaveTimer: Timer?
     @State private var isSaving = false
     
@@ -1917,6 +1918,11 @@ struct TextEditorView: View {
                 flushEditorToNote()
                 if hasUnsavedChanges, note.managedObjectContext != nil, !note.isDeleted {
                     saveNote()
+                }
+                // Purge photos removed from the text only after the final successful save
+                // (a save conflict rolls the note back, so its photos must stay).
+                if photoDeletionsSafeToCommit, !hasUnsavedChanges {
+                    coordinatorRef.value?.commitPendingPhotoDeletions()
                 }
             }
         }
@@ -2192,7 +2198,8 @@ struct TextEditorView: View {
             try viewContext.save()
             PersistenceController.shared.pingSyncToPeers()
             hasUnsavedChanges = false
-            coordinatorRef.value?.commitPendingPhotoDeletions()
+            // Photo purges are deferred until the editor closes so undo can still bring a photo back.
+            photoDeletionsSafeToCommit = true
         } catch let error as NSError {
             if error.domain == NSCocoaErrorDomain {
                 if error.code == 133020 || error.userInfo[NSPersistentStoreSaveConflictsErrorKey] != nil {

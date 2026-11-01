@@ -175,6 +175,7 @@ struct MarkdownEditorMac: NSViewRepresentable {
             let attributed = deserializeContent(text)
             tv.textStorage?.setAttributedString(attributed)
             refreshKnownPhotoRecordNames(from: tv.attributedString())
+            pendingPhotoDeletions.subtract(lastKnownPhotoRecordNames)
             applyTypingAttributes(in: tv)
             postStyleChange(in: tv)
         }

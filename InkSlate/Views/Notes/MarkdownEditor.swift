@@ -267,6 +267,8 @@ struct MarkdownEditor: UIViewRepresentable {
             let attributed = deserializeContent(text)
             tv.setAttributedStringForBindingSync(attributed)
             refreshKnownPhotoRecordNames(from: tv.attributedText)
+            // Reloaded content may contain photos that were pending removal; they are back in use.
+            pendingPhotoDeletions.subtract(lastKnownPhotoRecordNames)
             scheduleHydrateNotePhotos()
             lastPublishedSerialized = text
             parent.text = text
