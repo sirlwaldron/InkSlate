@@ -432,33 +432,68 @@ class BudgetManager: ObservableObject {
         saveContext(context)
     }
     
+    /// Deletes every budget category, subcategory and item (including the Monthly Income item).
+    /// Uses per-object deletes + a normal save instead of `NSBatchDeleteRequest` so CloudKit
+    /// mirroring records each deletion and relationship rules are applied.
     func clearAllBudgetData(with context: NSManagedObjectContext) {
         context.performAndWait {
             do {
-                try batchDelete(entityName: "BudgetItem", in: context)
-                try batchDelete(entityName: "BudgetSubcategory", in: context)
-                try batchDelete(entityName: "BudgetCategory", in: context)
+                for entityName in ["BudgetItem", "BudgetSubcategory", "BudgetCategory"] {
+                    let fetch = NSFetchRequest<NSManagedObject>(entityName: entityName)
+                    for object in try context.fetch(fetch) {
+                        context.delete(object)
+                    }
+                }
+                try context.save()
+                // The next seeding pass should treat the recreated categories as new.
+                UserDefaults.standard.removeObject(forKey: Self.seededSubcategoryCategoriesKey)
             } catch {
+                logger.error("Budget reset failed: \(error.localizedDescription)")
+                context.rollback()
+                ErrorHandlingService.shared.reportSaveFailure(error, module: "Budget")
             }
         }
     }
 
+    private static let seededSubcategoryCategoriesKey = "budget.seededDefaultSubcategoryCategoryIDs"
+
+    private func seededCategoryIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: Self.seededSubcategoryCategoriesKey) ?? [])
+    }
+
+    /// True when a category with factory subcategories hasn't been looked at yet on this device.
+    func hasCategoriesNeedingDefaultSubcategories(_ categories: [BudgetCategory]) -> Bool {
+        let seeded = seededCategoryIDs()
+        return categories.contains { category in
+            guard let id = category.id?.uuidString else { return false }
+            return !seeded.contains(id) && !BudgetDefaultSubcategories.subcategories(for: category.name ?? "").isEmpty
+        }
+    }
+
+    /// Adds the factory subcategories to a default category the FIRST time this device sees it empty.
+    /// Afterwards the category is remembered, so subcategories the user deletes (e.g. a streaming
+    /// service they don't use) are not brought back every time the Budget screen appears.
     func ensureAllDefaultSubcategoriesExist(
         categories: [BudgetCategory],
         with context: NSManagedObjectContext
     ) {
         context.performAndWait {
             var didChange = false
+            var seeded = seededCategoryIDs()
+            let seededBefore = seeded.count
 
             for category in categories {
+                guard let categoryID = category.id?.uuidString, !seeded.contains(categoryID) else { continue }
                 let categoryName = category.name ?? ""
                 let defaults = BudgetDefaultSubcategories.subcategories(for: categoryName)
                 guard !defaults.isEmpty else { continue }
 
                 let existing = (category.subcategories as? Set<BudgetSubcategory>) ?? []
-                let existingNames = Set(existing.compactMap { $0.name })
+                seeded.insert(categoryID)
+                // Categories that already have subcategories are left exactly as the user has them.
+                guard existing.isEmpty else { continue }
 
-                for name in defaults where !existingNames.contains(name) {
+                for name in defaults {
                     _ = createSubcategory(
                         name: name,
                         category: category,
@@ -467,15 +502,14 @@ class BudgetManager: ObservableObject {
                     )
                     didChange = true
                 }
-
-// Re-index subcategory sort orders (especially after factory reset).
-                if normalizeSubcategorySortOrdersIfNeeded(category: category, defaults: defaults) {
-                    didChange = true
-                }
+                _ = normalizeSubcategorySortOrdersIfNeeded(category: category, defaults: defaults)
             }
 
             if didChange {
                 saveContext(context)
+            }
+            if seeded.count != seededBefore {
+                UserDefaults.standard.set(Array(seeded), forKey: Self.seededSubcategoryCategoriesKey)
             }
         }
     }
@@ -535,22 +569,8 @@ class BudgetManager: ObservableObject {
             try context.save()
         } catch {
             logger.error("Budget save failed: \(error.localizedDescription)")
+            // Don't fail silently: a failed budget save used to leave the edit unsaved with no message.
+            ErrorHandlingService.shared.reportSaveFailure(error, module: "Budget")
         }
-    }
-
-    private func batchDelete(entityName: String, in context: NSManagedObjectContext) throws {
-        let fetch = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetch)
-        deleteRequest.resultType = .resultTypeObjectIDs
-
-        let result = try context.execute(deleteRequest) as? NSBatchDeleteResult
-        let objectIDs = (result?.result as? [NSManagedObjectID]) ?? []
-
-        guard !objectIDs.isEmpty else { return }
-
-        NSManagedObjectContext.mergeChanges(
-            fromRemoteContextSave: [NSDeletedObjectsKey: objectIDs],
-            into: [context]
-        )
     }
 }
