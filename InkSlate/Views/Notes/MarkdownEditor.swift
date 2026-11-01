@@ -1546,8 +1546,11 @@ class WysiwygActionHandler {
             .filter { $0 == "\n" }.count
         let docLines = (allText as NSString).components(separatedBy: "\n")
         func clearEmptyListLine() {
+            // Remove only the list marker; keep the line break so the (now plain) empty line stays
+            // and following paragraphs don't move up.
+            let contentLength = line.hasSuffix("\n") ? lineR.length - 1 : lineR.length
             textView.textStorage.beginEditing()
-            textView.textStorage.replaceCharacters(in: lineR, with: "")
+            textView.textStorage.replaceCharacters(in: NSRange(location: lineR.location, length: contentLength), with: "")
             textView.textStorage.endEditing()
             textView.selectedRange = NSRange(location: lineR.location, length: 0)
         }
@@ -2309,9 +2312,27 @@ class WysiwygActionHandler {
     }
 
 
+    /// "Clear formatting" must not strip inline photos (attachment + photo ref) or links;
+    /// removing those attributes would silently delete the photo from the note.
+    private static func attributesToPreserveWhenClearing(
+        in text: NSAttributedString, range: NSRange
+    ) -> [(range: NSRange, attrs: [NSAttributedString.Key: Any])] {
+        guard text.length > 0, range.length > 0, range.location < text.length else { return [] }
+        let safe = NSRange(location: range.location, length: min(range.length, text.length - range.location))
+        let keys: [NSAttributedString.Key] = [.attachment, .inkSlateNotePhoto, .link]
+        var runs: [(range: NSRange, attrs: [NSAttributedString.Key: Any])] = []
+        text.enumerateAttributes(in: safe, options: []) { attrs, r, _ in
+            var kept: [NSAttributedString.Key: Any] = [:]
+            for key in keys { if let value = attrs[key] { kept[key] = value } }
+            if !kept.isEmpty { runs.append((r, kept)) }
+        }
+        return runs
+    }
+
     private static func removeAllFormatting(in m: NSMutableAttributedString, range: NSRange) {
         let ns = m.string as NSString
         let paraRange = ns.paragraphRange(for: range)
+        let preserved = attributesToPreserveWhenClearing(in: m, range: paraRange)
         
         m.setAttributes([
             .font: EditorTheme.baseFont,
@@ -2324,11 +2345,13 @@ class WysiwygActionHandler {
         style.paragraphSpacing = 0
         style.alignment = .natural
         m.addAttribute(.paragraphStyle, value: style, range: paraRange)
+        for run in preserved { m.addAttributes(run.attrs, range: run.range) }
     }
     
     private static func removeAllFormatting(in storage: NSTextStorage, range: NSRange) {
         let ns = storage.string as NSString
         let paraRange = ns.paragraphRange(for: range)
+        let preserved = attributesToPreserveWhenClearing(in: storage, range: paraRange)
         
         storage.setAttributes([
             .font: EditorTheme.baseFont,
@@ -2341,6 +2364,7 @@ class WysiwygActionHandler {
         style.paragraphSpacing = 0
         style.alignment = .natural
         storage.addAttribute(.paragraphStyle, value: style, range: paraRange)
+        for run in preserved { storage.addAttributes(run.attrs, range: run.range) }
     }
 
 }
