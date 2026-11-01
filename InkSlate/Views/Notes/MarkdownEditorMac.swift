@@ -413,17 +413,17 @@ struct MarkdownEditorMac: NSViewRepresentable {
         private func uploadAndInsertPhoto(_ image: NSImage, in tv: NSTextView) async {
             guard let noteID = parent.noteCloudKitID else { return }
 
-            let uploadImage: NSImage
-            if let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024),
-               let normalized = NSImage(data: data) {
-                uploadImage = normalized
-            } else {
-                uploadImage = image
-            }
-
             let attachmentID = UUID()
             let recordName = "NotePhoto-\(attachmentID.uuidString)"
-            NotePhotoDiskCache.save(uploadImage, recordName: recordName)
+            guard let prepared = await NotePhotoAttachment.prepareAndSave(image, recordName: recordName) else {
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Notes",
+                    detail: "That photo couldn't be prepared. Try a smaller image."
+                )
+                return
+            }
+            let uploadImage = prepared.image
+            NotePhotoCloudHydrator.storeInMemoryCache(uploadImage, recordName: recordName)
 
             let width = NotePhotoAttachment.textColumnWidth(for: tv)
             let sz = NotePhotoAttachment.displaySize(for: uploadImage, width: width)
@@ -442,7 +442,7 @@ struct MarkdownEditorMac: NSViewRepresentable {
 
             do {
                 _ = try await CloudKitAssetService.shared.uploadNotePhoto(
-                    uploadImage,
+                    jpegData: prepared.jpegData,
                     noteID: noteID,
                     attachmentID: attachmentID
                 )

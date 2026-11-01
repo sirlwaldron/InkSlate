@@ -1033,19 +1033,19 @@ struct MarkdownEditor: UIViewRepresentable {
             guard let tv = textView, let noteID = parent.noteCloudKitID else { return }
             guard !parent.notePhotosDisabled else { return }
 
-            let uploadImage: UIImage
-            if let data = image.inkSlateJPEGDataFitting(maxBytes: 5 * 1024 * 1024),
-               let normalized = UIImage(data: data) {
-                uploadImage = normalized
-            } else {
-                uploadImage = image
-            }
-
             let attachmentID = UUID()
             let recordName = "NotePhoto-\(attachmentID.uuidString)"
 
-            // Keep the photo on-device first so a CloudKit blip never drops it from the note.
-            NotePhotoDiskCache.save(uploadImage, recordName: recordName)
+            // Encode once (off the main thread) and keep the photo on-device first,
+            // so a CloudKit blip never drops it from the note.
+            guard let prepared = await NotePhotoAttachment.prepareAndSave(image, recordName: recordName) else {
+                ErrorHandlingService.shared.reportOperationFailure(
+                    module: "Notes",
+                    detail: "That photo couldn't be prepared. Try a smaller image."
+                )
+                return
+            }
+            let uploadImage = prepared.image
             NotePhotoCloudHydrator.storeInMemoryCache(uploadImage, recordName: recordName)
 
             let column = NotePhotoAttachment.textColumnWidth(for: tv)
@@ -1054,7 +1054,7 @@ struct MarkdownEditor: UIViewRepresentable {
 
             do {
                 _ = try await CloudKitAssetService.shared.uploadNotePhoto(
-                    uploadImage,
+                    jpegData: prepared.jpegData,
                     noteID: noteID,
                     attachmentID: attachmentID
                 )
@@ -1095,10 +1095,6 @@ struct MarkdownEditor: UIViewRepresentable {
             }
             tv.selectedRange = NSRange(location: replaceRange.location + insert.length + 1, length: 0)
             refreshKnownPhotoRecordNames(from: tv.attributedText)
-            NotePhotoCloudHydrator.storeInMemoryCache(image, recordName: recordName)
-            Task.detached(priority: .userInitiated) {
-                NotePhotoDiskCache.save(image, recordName: recordName)
-            }
             serializeAfterAttributeChange(in: tv)
             parent.onPhotoIndexChanged?(NotePhotoRefCollector.jsonIndex(for: tv.attributedText))
             scheduleHydrateNotePhotos()
